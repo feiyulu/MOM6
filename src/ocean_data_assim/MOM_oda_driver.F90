@@ -32,6 +32,8 @@ module MOM_oda_driver_mod
   use ensemble_manager_mod, only : get_ensemble_pelist, get_ensemble_filter_pelist
   use time_manager_mod, only : time_type, decrement_time, increment_time
   use time_manager_mod, only : get_date, get_time, operator(>=),operator(/=),operator(==),operator(<)
+  use MOM_diag_mediator, only : register_diag_field, post_data
+  use MOM_diag_mediator, only : diag_ctrl, enable_averaging, disable_averaging
   use constants_mod, only : rseconds_per_hour=>seconds_per_hour, rseconds_per_day=>seconds_per_day
   ! ODA Modules
   use oda_types_mod, only : grid_type, ocean_profile_type, ocean_control_struct
@@ -104,6 +106,8 @@ module MOM_oda_driver_mod
      type(regridding_CS) :: regridCS !< ALE control structure for regridding
      type(remapping_CS) :: remapCS !< ALE control structure for remapping
      type(time_type) :: Time !< Current Analysis time
+     type(diag_ctrl), pointer :: diag
+     integer :: id_inc_t, id_inc_s
   end type ODA_CS
 
   type :: pointer_mpp_domain
@@ -123,11 +127,12 @@ contains
 !! initialize analysis grid and ODA-related variables
 !! information for all ensemble members
 
-  subroutine init_oda(Time, G, GV, CS)
+  subroutine init_oda(Time, G, GV, diag_CS, CS)
 
     type(time_type), intent(in) :: Time !< The current model time.
     type(ocean_grid_type), pointer :: G !< domain and grid information for ocean model
     type(verticalGrid_type), intent(in) :: GV   !< The ocean's vertical grid structure
+    type(diag_ctrl), target, intent(inout) :: diag_CS
     type(ODA_CS), pointer :: CS
 
  ! Local variables
@@ -273,14 +278,20 @@ contains
     CS%oda_grid%basin_mask(:,:) = 0.0
     call MOM_read_data(basin_file,'basin',CS%oda_grid%basin_mask,CS%Grid%domain, timelevel=1)
 
+    CS%diag => diag_CS
+    CS%id_inc_t=register_diag_field('ocean_model','temp_increment',diag_CS%axesTL,&
+            Time,'ocean potential temperature increments','degC')
+    CS%id_inc_s=register_diag_field('ocean_model','salt_increment',diag_CS%axesTL,&
+            Time,'ocean salinity increments','psu')
+
     !!  get global grid information from ocean model
     call set_up_global_tgrid(T_grid, CS)
 
     call oda_core_init(CS%mpp_domain, T_grid, CS%Profiles, Time)
  
     !! Set the initial assimilation time
-    !CS%Time=Time
-    CS%Time=increment_time(Time,CS%assim_frequency*seconds_per_hour)
+    CS%Time=Time
+    !CS%Time=increment_time(Time,CS%assim_frequency*seconds_per_hour)
 
     call mpp_clock_end(id_oda_init)
     !! switch back to ensemble member pelist
@@ -384,7 +395,6 @@ contains
         call mpp_redistribute(CS%mpp_domain, CS%Ocean_posterior%S(:,:,:,m), &
                 CS%domains(m)%mpp_domain, CS%tv%S, complete=.true.)
       endif
-
     end do
 
     if(present(tv)) tv => CS%tv
@@ -506,8 +516,9 @@ contains
     return
   end subroutine save_obs_diff
 
-  subroutine apply_oda_tracer_increments(dt,G,tv,h,CS)
+  subroutine apply_oda_tracer_increments(dt,Time_end,G,tv,h,CS)
     real, intent(in) :: dt ! the tracer timestep (seconds)
+    type(time_type), intent(in) :: Time_end  !< Time at the end of the interval
     type(ocean_grid_type), intent(in)    :: G      !< ocean grid structure
     type(thermo_var_ptrs), intent(inout) :: tv     !< A structure pointing to various thermodynamic variables
     real, dimension(SZI_(G),SZJ_(G),SZK_(G)), intent(in) :: h !< layer thickness (m or kg/m2)
@@ -518,7 +529,7 @@ contains
     integer :: isc, iec, jsc, jec
 
     !! switch to global pelist
-    call set_current_pelist(CS%filter_pelist)
+    !call set_current_pelist(CS%filter_pelist)
     id_oda_apply_increments = mpp_clock_id('(ODA applying increments)')
     call mpp_clock_begin(id_oda_apply_increments)
 
@@ -533,9 +544,16 @@ contains
     tv%T = tv%T + T_inc * dt
     tv%S = tv%S + S_inc * dt
 
+    call enable_averaging(dt, Time_end, CS%diag)
+    if (CS%id_inc_t > 0) then
+      call post_data(CS%id_inc_t, T_inc, CS%diag)
+    endif
+    if (CS%id_inc_t > 0) call post_data(CS%id_inc_t, S_inc, CS%diag)
+    call disable_averaging(CS%diag)
+
     call mpp_clock_end(id_oda_apply_increments)
     !! switch back to ensemble member pelist
-    call set_current_pelist(CS%ensemble_pelist(CS%ensemble_id,:))
+    !call set_current_pelist(CS%ensemble_pelist(CS%ensemble_id,:))
 
     return
 

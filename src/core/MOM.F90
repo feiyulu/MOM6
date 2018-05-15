@@ -1112,7 +1112,7 @@ subroutine step_MOM_thermo(CS, G, GV, u, v, h, tv, fluxes, dtdia, Time_end_therm
 
   call enable_averaging(dtdia, Time_end_thermo, CS%diag)
 
-  call apply_oda_tracer_increments(dtdia,G,tv,h,CS%odaCS)
+  call apply_oda_tracer_increments(dtdia,Time_end_thermo,G,tv,h,CS%odaCS)
 
   if (update_BBL) then
     !   Calculate the BBL properties and store them inside visc (u,h).
@@ -2376,7 +2376,7 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, restart_CSp, &
 
 
   if (CS%ensemble_ocean) then
-      call init_oda(Time, G, GV, CS%odaCS)
+      call init_oda(Time, G, GV, CS%diag, CS%odaCS)
   endif
 
   call callTree_leave("initialize_MOM()")
