@@ -548,7 +548,7 @@ contains
     if (CS%id_inc_t > 0) then
       call post_data(CS%id_inc_t, T_inc, CS%diag)
     endif
-    if (CS%id_inc_t > 0) call post_data(CS%id_inc_t, S_inc, CS%diag)
+    if (CS%id_inc_s > 0) call post_data(CS%id_inc_s, S_inc, CS%diag)
     call disable_averaging(CS%diag)
 
     call mpp_clock_end(id_oda_apply_increments)
