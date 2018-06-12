@@ -25,7 +25,7 @@ module MOM_oda_driver_mod
   use mpp_mod, only : mpp_sync_self
   use mpp_mod, only : mpp_clock_id, mpp_clock_begin, mpp_clock_end
   use mpp_io_mod, only : MPP_SINGLE,MPP_MULTI
-  use mpp_domains_mod, only : domain2d, mpp_global_field
+  use mpp_domains_mod, only : domain2d, mpp_global_field, mpp_update_domains
   use mpp_domains_mod, only : mpp_get_compute_domain, mpp_get_data_domain
   use mpp_domains_mod, only : mpp_redistribute, mpp_broadcast_domain
   use ensemble_manager_mod, only : get_ensemble_id, get_ensemble_size
@@ -338,6 +338,11 @@ contains
            CS%mpp_domain, CS%Ocean_prior%S(:,:,:,m), complete=.true.)
     enddo
 
+    do m=1,CS%ensemble_size
+      call mpp_update_domains(CS%Ocean_prior%T(:,:,:,m), CS%mpp_domain)
+      call mpp_update_domains(CS%Ocean_prior%S(:,:,:,m), CS%mpp_domain)
+    enddo
+
     call mpp_clock_end(id_oda_prior)
     !! switch back to ensemble member pelist
     call set_current_pelist(CS%ensemble_pelist(CS%ensemble_id,:))
@@ -540,6 +545,9 @@ contains
       call remapping_core_h(CS%remapCS, CS%nk, CS%h(i,j,:), CS%tv%S(i,j,:), &
               G%ke, h(i,j,:), S_inc(i,j,:))
     enddo; enddo
+
+    call mpp_update_domains(T_inc, G%Domain%mpp_domain)
+    call mpp_update_domains(S_inc, G%Domain%mpp_domain)
 
     tv%T = tv%T + T_inc * dt
     tv%S = tv%S + S_inc * dt
