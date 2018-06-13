@@ -270,6 +270,15 @@ contains
     CS%oda_grid%x => CS%Grid%geolonT
     CS%oda_grid%y => CS%Grid%geolatT
 
+    allocate(CS%oda_grid%z(isd:ied,jsd:jed,CS%nk));   CS%oda_grid%z(:,:,:)=0.0
+    do k = 1, CS%nk
+      if (k .eq. 1) then
+        CS%oda_grid%z(:,:,k) = CS%h(:,:,k)/2
+      else
+        CS%oda_grid%z(:,:,k) = CS%oda_grid%z(:,:,k-1) + (CS%h(:,:,k) + CS%h(:,:,k-1))/2
+      end if
+    end do
+
     call get_param(PF, 'oda_driver', "BASIN_FILE", basin_file, &
             "A file in which to find the basin masks, in variable 'basin'.", &
             default="basin.nc")
