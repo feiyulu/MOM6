@@ -36,13 +36,11 @@ module MOM_oda_driver_mod
   use MOM_diag_mediator, only : diag_ctrl, enable_averaging, disable_averaging
   use constants_mod, only : rseconds_per_hour=>seconds_per_hour, rseconds_per_day=>seconds_per_day
   ! ODA Modules
-  use oda_types_mod, only : grid_type, ocean_profile_type, ocean_control_struct
-  use oda_core_mod, only : oda_core_init, get_profiles
-#ifdef ENABLE_ECDA
+  use ocean_da_types_mod, only : grid_type, ocean_profile_type, ocean_control_struct
+  use ocean_da_core_mod, only : ocean_da_core_init, get_profiles
   use eakf_oda_mod, only : ensemble_filter
-#endif
-  use write_ocean_data_mod, only : open_profile_file
-  use write_ocean_data_mod, only : write_profile,close_profile_file
+  use write_ocean_obs_mod, only : open_profile_file
+  use write_ocean_obs_mod, only : write_profile,close_profile_file
   use kdtree, only : kd_root !# JEDI
   ! MOM Modules
   use MOM_checksum_packages,    only : MOM_thermo_chksum
@@ -296,7 +294,7 @@ contains
     !!  get global grid information from ocean model
     call set_up_global_tgrid(T_grid, CS)
 
-    call oda_core_init(CS%mpp_domain, T_grid, CS%Profiles, Time)
+    call ocean_da_core_init(CS%mpp_domain, T_grid, CS%Profiles, Time)
  
     !! Set the initial assimilation time
     CS%Time=Time
@@ -434,12 +432,10 @@ contains
       !! get profiles for current assimilation step 
       call get_profiles(Time, CS%Profiles, CS%CProfiles)
 
-#ifdef ENABLE_ECDA
       call ensemble_filter(CS%Ocean_prior, CS%Ocean_posterior, CS%CProfiles, CS%kdroot, CS%mpp_domain, CS%oda_grid)
       call get_posterior_tracer(Time, CS, increment=.true.)
       CS%tv%T = CS%tv%T / (CS%assim_frequency * seconds_per_hour)
       CS%tv%S = CS%tv%S / (CS%assim_frequency * seconds_per_hour)
-#endif
 
       !! switch back to ensemble member pelist
       call set_current_pelist(CS%ensemble_pelist(CS%ensemble_id,:))
