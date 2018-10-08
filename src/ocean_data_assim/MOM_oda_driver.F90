@@ -142,6 +142,7 @@ contains
     type(grid_type), pointer :: T_grid !< global tracer grid
     real, dimension(:,:), allocatable :: global2D, global2D_old
     real, dimension(:), allocatable :: lon1D, lat1D, glon1D, glat1D
+    real, dimension(:,:,:), allocatable :: h
     type(param_file_type) :: PF
     integer :: n, m, k, i, j, nk, id_oda_init
     integer :: is,ie,js,je,isd,ied,jsd,jed
@@ -269,11 +270,15 @@ contains
     CS%oda_grid%y => CS%Grid%geolatT
 
     allocate(CS%oda_grid%z(isd:ied,jsd:jed,CS%nk));   CS%oda_grid%z(:,:,:)=0.0
+    allocate(h(isd:ied,jsd:jed,CS%nk));   h(:,:,:)=0.0
+    do m=1,CS%ensemble_size
+      call mpp_redistribute(CS%domains(m)%mpp_domain, CS%h, CS%mpp_domain, h, complete=.true.)
+    enddo
     do k = 1, CS%nk
       if (k .eq. 1) then
-        CS%oda_grid%z(:,:,k) = CS%h(:,:,k)/2
+        CS%oda_grid%z(:,:,k) = h(:,:,k)/2
       else
-        CS%oda_grid%z(:,:,k) = CS%oda_grid%z(:,:,k-1) + (CS%h(:,:,k) + CS%h(:,:,k-1))/2
+        CS%oda_grid%z(:,:,k) = CS%oda_grid%z(:,:,k-1) + (h(:,:,k) + h(:,:,k-1))/2
       end if
     end do
 
@@ -415,7 +420,10 @@ contains
     !! switch back to ensemble member pelist
     call set_current_pelist(CS%ensemble_pelist(CS%ensemble_id,:))
 
-   end subroutine get_posterior_tracer
+    call mpp_update_domains(CS%tv%T, CS%domains(CS%ensemble_id)%mpp_domain)
+    call mpp_update_domains(CS%tv%S, CS%domains(CS%ensemble_id)%mpp_domain)
+
+  end subroutine get_posterior_tracer
 
   subroutine oda(Time, CS)
     type(time_type), intent(in) :: Time
@@ -431,14 +439,13 @@ contains
       call set_current_pelist(CS%filter_pelist)
       !! get profiles for current assimilation step 
       call get_profiles(Time, CS%Profiles, CS%CProfiles)
-
       call ensemble_filter(CS%Ocean_prior, CS%Ocean_posterior, CS%CProfiles, CS%kdroot, CS%mpp_domain, CS%oda_grid)
+      !! switch back to ensemble member pelist
+      call set_current_pelist(CS%ensemble_pelist(CS%ensemble_id,:))
+
       call get_posterior_tracer(Time, CS, increment=.true.)
       CS%tv%T = CS%tv%T / (CS%assim_frequency * seconds_per_hour)
       CS%tv%S = CS%tv%S / (CS%assim_frequency * seconds_per_hour)
-
-      !! switch back to ensemble member pelist
-      call set_current_pelist(CS%ensemble_pelist(CS%ensemble_id,:))
 
     end if
 
@@ -557,10 +564,11 @@ contains
     tv%T = tv%T + T_inc * dt
     tv%S = tv%S + S_inc * dt
 
+    call mpp_update_domains(tv%T, G%Domain%mpp_domain)
+    call mpp_update_domains(tv%S, G%Domain%mpp_domain)
+
     call enable_averaging(dt, Time_end, CS%diag)
-    if (CS%id_inc_t > 0) then
-      call post_data(CS%id_inc_t, T_inc, CS%diag)
-    endif
+    if (CS%id_inc_t > 0) call post_data(CS%id_inc_t, T_inc, CS%diag)
     if (CS%id_inc_s > 0) call post_data(CS%id_inc_s, S_inc, CS%diag)
     call disable_averaging(CS%diag)
 
