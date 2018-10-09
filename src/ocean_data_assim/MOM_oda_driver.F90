@@ -271,9 +271,7 @@ contains
 
     allocate(CS%oda_grid%z(isd:ied,jsd:jed,CS%nk));   CS%oda_grid%z(:,:,:)=0.0
     allocate(h(isd:ied,jsd:jed,CS%nk));   h(:,:,:)=0.0
-    do m=1,CS%ensemble_size
-      call mpp_redistribute(CS%domains(m)%mpp_domain, CS%h, CS%mpp_domain, h, complete=.true.)
-    enddo
+    call mpp_redistribute(CS%domains(1)%mpp_domain, CS%h, CS%mpp_domain, h, complete=.true.)
     do k = 1, CS%nk
       if (k .eq. 1) then
         CS%oda_grid%z(:,:,k) = h(:,:,k)/2
