@@ -295,7 +295,7 @@ contains
             Time,'ocean salinity increments','psu')
 
     !!  get global grid information from ocean model
-    call set_up_global_tgrid(T_grid, CS)
+    call set_up_global_tgrid(T_grid, CS, G)
 
     call ocean_da_core_init(CS%mpp_domain, T_grid, CS%Profiles, Time)
  
@@ -303,6 +303,7 @@ contains
     CS%Time=Time
     !CS%Time=increment_time(Time,CS%assim_frequency*seconds_per_hour)
 
+    deallocate(T_grid)
     call mpp_clock_end(id_oda_init)
     !! switch back to ensemble member pelist
     call set_current_pelist(CS%ensemble_pelist(CS%ensemble_id,:))
@@ -413,6 +414,12 @@ contains
     end do
 
     if(present(tv)) tv => CS%tv
+
+    if(get_inc) then
+      if( associated(Ocean_increment) ) then
+        deallocate(Ocean_increment)
+      endif
+    endif
 
     call mpp_clock_end(id_oda_posterior)
     !! switch back to ensemble member pelist
@@ -559,8 +566,8 @@ contains
     call mpp_update_domains(T_inc, G%Domain%mpp_domain)
     call mpp_update_domains(S_inc, G%Domain%mpp_domain)
 
-    tv%T = tv%T + T_inc * dt
-    tv%S = tv%S + S_inc * dt
+    tv%T(isc:iec,jsc:jec,:)=tv%T(isc:iec,jsc:jec,:)+T_inc(isc:iec,jsc:jec,:)*dt
+    tv%S(isc:iec,jsc:jec,:)=tv%S(isc:iec,jsc:jec,:)+S_inc(isc:iec,jsc:jec,:)*dt
 
     call mpp_update_domains(tv%T, G%Domain%mpp_domain)
     call mpp_update_domains(tv%S, G%Domain%mpp_domain)
@@ -578,9 +585,10 @@ contains
 
   end subroutine apply_oda_tracer_increments
 
-  subroutine set_up_global_tgrid(T_grid, CS)
+  subroutine set_up_global_tgrid(T_grid, CS, G)
     type(grid_type), pointer :: T_grid !< global tracer grid
     type(ODA_CS), pointer, intent(in) :: CS
+    type(ocean_grid_type), pointer :: G !< domain and grid information for ocean model
 
     ! local variables
     real, dimension(:,:), allocatable :: global2D, global2D_old
@@ -598,6 +606,9 @@ contains
     
     allocate(T_grid%basin_mask(CS%ni,CS%nj))
     call mpp_global_field(CS%mpp_domain, CS%oda_grid%basin_mask, T_grid%basin_mask)
+
+    allocate(T_grid%bathyT(CS%ni,CS%nj))
+    call mpp_global_field(CS%domains(CS%ensemble_id)%mpp_domain, G%bathyT, T_grid%bathyT)
 
     allocate(T_grid%mask(CS%ni,CS%nj,CS%nk));   T_grid%mask(:,:,:) = 0.0
     allocate(T_grid%z(CS%ni,CS%nj,CS%nk));      T_grid%z(:,:,:) = 0.0
