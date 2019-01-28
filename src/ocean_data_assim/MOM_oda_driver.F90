@@ -139,9 +139,7 @@ contains
     type(hor_index_type), pointer :: HI=> NULL()
     type(directories) :: dirs
 
-    type(grid_type), pointer :: T_grid !< global tracer grid
-    real, dimension(:,:), allocatable :: global2D, global2D_old
-    real, dimension(:), allocatable :: lon1D, lat1D, glon1D, glat1D
+    type(grid_type), pointer :: T_grid => NULL() !< global tracer grid
     real, dimension(:,:,:), allocatable :: h
     type(param_file_type) :: PF
     integer :: n, m, k, i, j, nk, id_oda_init
@@ -250,6 +248,8 @@ contains
     call initialize_regridding(CS%regridCS, CS%GV, dG%max_depth,PF,'oda_driver',coord_mode,'','')
     call initialize_remapping(CS%remapCS,'PCM')
     call set_regrid_params(CS%regridCS, min_thickness=0.)
+
+    ! get domain indices from model domain decomposition
     isd = G%isd; ied = G%ied; jsd = G%jsd; jed = G%jed
     if(.not. associated(CS%h)) then
         allocate(CS%h(isd:ied,jsd:jed,CS%GV%ke)); CS%h(:,:,:) = CS%GV%Angstrom
@@ -257,6 +257,7 @@ contains
         call ALE_initThicknessToCoord(CS%ALE_CS,G,CS%GV,CS%h)
     endif
     allocate(CS%tv)     ! storage for increment
+    ! increments are stored in z* and model domain decomposition
     allocate(CS%tv%T(isd:ied,jsd:jed,CS%GV%ke)); CS%tv%T(:,:,:)=0.0
     allocate(CS%tv%S(isd:ied,jsd:jed,CS%GV%ke)); CS%tv%S(:,:,:)=0.0
     allocate(T(isd:ied,jsd:jed,CS%nk)); T = 0.0
@@ -264,8 +265,9 @@ contains
     allocate(T_inc(isd:ied,jsd:jed,GV%ke)); T_inc = 0.0
     allocate(S_inc(isd:ied,jsd:jed,GV%ke)); S_inc = 0.0
 
+    ! get domain indices from analysis domain decomposition
     isd = CS%Grid%isd; ied = CS%Grid%ied; jsd = CS%Grid%jsd; jed = CS%Grid%jed
-    allocate(CS%oda_grid)
+    allocate(CS%oda_grid) ! local grid information needed from analysis
     CS%oda_grid%x => CS%Grid%geolonT
     CS%oda_grid%y => CS%Grid%geolatT
 
@@ -280,6 +282,7 @@ contains
       end if
     end do
 
+    ! get basin flag from file
     call get_param(PF, 'oda_driver', "BASIN_FILE", basin_file, &
             "A file in which to find the basin masks, in variable 'basin'.", &
             default="basin.nc")
@@ -288,13 +291,14 @@ contains
     CS%oda_grid%basin_mask(:,:) = 0.0
     call MOM_read_data(basin_file,'basin',CS%oda_grid%basin_mask,CS%Grid%domain, timelevel=1)
 
+    ! set up diag variables for analysis increments
     CS%diag => diag_CS
     CS%id_inc_t=register_diag_field('ocean_model','temp_increment',diag_CS%axesTL,&
             Time,'ocean potential temperature increments','degC')
     CS%id_inc_s=register_diag_field('ocean_model','salt_increment',diag_CS%axesTL,&
             Time,'ocean salinity increments','psu')
 
-    !!  get global grid information from ocean model
+    !!  get global grid information from ocean model needed for ODA initialization
     call set_up_global_tgrid(T_grid, CS, G)
 
     call ocean_da_core_init(CS%mpp_domain, T_grid, CS%Profiles, Time)
@@ -304,6 +308,7 @@ contains
     !CS%Time=increment_time(Time,CS%assim_frequency*seconds_per_hour)
 
     deallocate(T_grid)
+    deallocate(h)
     call mpp_clock_end(id_oda_init)
     !! switch back to ensemble member pelist
     call set_current_pelist(CS%ensemble_pelist(CS%ensemble_id,:))
@@ -594,7 +599,7 @@ contains
     real, dimension(:,:), allocatable :: global2D, global2D_old
     integer :: i, j, k
 
-    allocate(T_grid)
+    if(.not. associated(T_grid)) allocate(T_grid)
     T_grid%ni = CS%ni
     T_grid%nj = CS%nj
     T_grid%nk = CS%nk
@@ -630,6 +635,8 @@ contains
       global2D_old = global2D
     end do
 
+    deallocate(global2D)
+    deallocate(global2D_old)
   end subroutine set_up_global_tgrid
 
 end module MOM_oda_driver_mod
