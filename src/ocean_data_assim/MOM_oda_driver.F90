@@ -271,6 +271,9 @@ contains
     CS%oda_grid%x => CS%Grid%geolonT
     CS%oda_grid%y => CS%Grid%geolatT
 
+    !allocate(CS%oda_grid%bathyT(isd:ied,jsd:jed));   CS%oda_grid%bathyT(:,:)=0.0
+    !call mpp_redistribute(CS%domains(1)%mpp_domain, G%bathyT, &
+            !CS%mpp_domain, CS%oda_grid%bathyT, complete=.true.)
     allocate(CS%oda_grid%z(isd:ied,jsd:jed,CS%nk));   CS%oda_grid%z(:,:,:)=0.0
     allocate(h(isd:ied,jsd:jed,CS%nk));   h(:,:,:)=0.0
     call mpp_redistribute(CS%domains(1)%mpp_domain, CS%h, CS%mpp_domain, h, complete=.true.)
@@ -419,12 +422,6 @@ contains
     end do
 
     if(present(tv)) tv => CS%tv
-
-    if(get_inc) then
-      if( associated(Ocean_increment) ) then
-        deallocate(Ocean_increment)
-      endif
-    endif
 
     call mpp_clock_end(id_oda_posterior)
     !! switch back to ensemble member pelist
