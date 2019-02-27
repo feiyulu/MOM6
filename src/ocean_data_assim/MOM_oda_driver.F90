@@ -32,7 +32,7 @@ module MOM_oda_driver_mod
   use ensemble_manager_mod, only : get_ensemble_pelist, get_ensemble_filter_pelist
   use time_manager_mod, only : time_type, decrement_time, increment_time
   use time_manager_mod, only : get_date, get_time, operator(>=),operator(/=),operator(==),operator(<)
-  use MOM_diag_mediator, only : register_diag_field, post_data
+  use MOM_diag_mediator, only : register_diag_field, post_data, diag_update_remap_grids
   use MOM_diag_mediator, only : diag_ctrl, enable_averaging, disable_averaging
   use constants_mod, only : rseconds_per_hour=>seconds_per_hour, rseconds_per_day=>seconds_per_day
   ! ODA Modules
@@ -579,6 +579,7 @@ contains
     if (CS%id_inc_s > 0) call post_data(CS%id_inc_s, S_inc, CS%diag)
     call disable_averaging(CS%diag)
 
+    call diag_update_remap_grids(CS%diag)
     call mpp_clock_end(id_oda_apply_increments)
     !! switch back to ensemble member pelist
     !call set_current_pelist(CS%ensemble_pelist(CS%ensemble_id,:))
