@@ -140,7 +140,7 @@ contains
     type(directories) :: dirs
 
     type(grid_type), pointer :: T_grid => NULL() !< global tracer grid
-    real, dimension(:,:,:), allocatable :: h
+    !real, dimension(:,:,:), allocatable :: h
     type(param_file_type) :: PF
     integer :: n, m, k, i, j, nk, id_oda_init
     integer :: is,ie,js,je,isd,ied,jsd,jed
@@ -246,7 +246,7 @@ contains
          "Coordinate mode for vertical regridding.", &
          default="ZSTAR", fail_if_missing=.false.)
     call initialize_regridding(CS%regridCS, CS%GV, dG%max_depth,PF,'oda_driver',coord_mode,'','')
-    call initialize_remapping(CS%remapCS,'PCM')
+    call initialize_remapping(CS%remapCS,'PPM_IH4')
     call set_regrid_params(CS%regridCS, min_thickness=0.)
 
     ! get domain indices from model domain decomposition
@@ -274,16 +274,16 @@ contains
     !allocate(CS%oda_grid%bathyT(isd:ied,jsd:jed));   CS%oda_grid%bathyT(:,:)=0.0
     !call mpp_redistribute(CS%domains(1)%mpp_domain, G%bathyT, &
             !CS%mpp_domain, CS%oda_grid%bathyT, complete=.true.)
-    allocate(CS%oda_grid%z(isd:ied,jsd:jed,CS%nk));   CS%oda_grid%z(:,:,:)=0.0
-    allocate(h(isd:ied,jsd:jed,CS%nk));   h(:,:,:)=0.0
-    call mpp_redistribute(CS%domains(1)%mpp_domain, CS%h, CS%mpp_domain, h, complete=.true.)
-    do k = 1, CS%nk
-      if (k .eq. 1) then
-        CS%oda_grid%z(:,:,k) = h(:,:,k)/2
-      else
-        CS%oda_grid%z(:,:,k) = CS%oda_grid%z(:,:,k-1) + (h(:,:,k) + h(:,:,k-1))/2
-      end if
-    end do
+    !allocate(CS%oda_grid%z(isd:ied,jsd:jed,CS%nk));   CS%oda_grid%z(:,:,:)=0.0
+    !allocate(h(isd:ied,jsd:jed,CS%nk));   h(:,:,:)=0.0
+    !call mpp_redistribute(CS%domains(1)%mpp_domain, CS%h, CS%mpp_domain, h, complete=.true.)
+    !do k = 1, CS%nk
+      !if (k .eq. 1) then
+        !CS%oda_grid%z(:,:,k) = h(:,:,k)/2
+      !else
+        !CS%oda_grid%z(:,:,k) = CS%oda_grid%z(:,:,k-1) + (h(:,:,k) + h(:,:,k-1))/2
+      !end if
+    !end do
 
     ! get basin flag from file
     call get_param(PF, 'oda_driver', "BASIN_FILE", basin_file, &
@@ -311,7 +311,7 @@ contains
     !CS%Time=increment_time(Time,CS%assim_frequency*seconds_per_hour)
 
     deallocate(T_grid)
-    deallocate(h)
+    !deallocate(h)
     call mpp_clock_end(id_oda_init)
     !! switch back to ensemble member pelist
     call set_current_pelist(CS%ensemble_pelist(CS%ensemble_id,:))
