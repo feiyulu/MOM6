@@ -152,6 +152,7 @@ contains
     character(len=30) :: coord_mode
     character(len=200) :: inputdir, basin_file
     logical :: reentrant_x, reentrant_y, tripolar_N, symmetric
+    character(len=80) :: remap_scheme
 
     if (associated(CS)) call mpp_error(FATAL,'Calling oda_init with associated control structure')
     allocate(CS)
@@ -180,6 +181,7 @@ contains
             "The total number of thickness grid points in the \n"//&
             "y-direction in the physical domain.")
     call get_param(PF, 'MOM', "INPUTDIR", inputdir)
+    call get_param(PF, "MOM", "REMAPPING_SCHEME", remap_scheme, default="PPM_H4")
     inputdir = slasher(inputdir)
 
     select case(lowercase(trim(assim_method)))
@@ -246,7 +248,7 @@ contains
          "Coordinate mode for vertical regridding.", &
          default="ZSTAR", fail_if_missing=.false.)
     call initialize_regridding(CS%regridCS, CS%GV, dG%max_depth,PF,'oda_driver',coord_mode,'','')
-    call initialize_remapping(CS%remapCS,'PPM_IH4')
+    call initialize_remapping(CS%remapCS,remap_scheme)
     call set_regrid_params(CS%regridCS, min_thickness=0.)
 
     ! get domain indices from model domain decomposition
