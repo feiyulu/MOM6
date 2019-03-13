@@ -43,6 +43,9 @@ module MOM_oda_driver_mod
   use write_ocean_obs_mod, only : write_profile,close_profile_file
   use kdtree, only : kd_root !# JEDI
   ! MOM Modules
+  use MOM_time_manager, only : init_external_field, get_external_field_size, time_interp_external_init
+  !use MOM_time_manager, only : get_external_field_missing
+  use MOM_horizontal_regridding, only : horiz_interp_and_extrap_tracer, myStats
   use MOM_checksum_packages,    only : MOM_thermo_chksum
   use MOM_io, only : slasher, MOM_read_data
   use MOM_error_handler, only : FATAL, WARNING, MOM_error, is_root_pe
@@ -72,6 +75,12 @@ module MOM_oda_driver_mod
 
 #include <MOM_memory.h>
 
+  type :: INC_CS
+     integer :: fldno = 0
+     integer :: T_id
+     integer :: S_id
+  end type INC_CS
+
   type, public :: ODA_CS; private
      type(ocean_control_struct), pointer :: Ocean_prior=> NULL() !< ensemble ocean prior states in DA space
      type(ocean_control_struct), pointer :: Ocean_posterior=> NULL() !< ensemble ocean posterior states
@@ -79,12 +88,14 @@ module MOM_oda_driver_mod
      type(ocean_control_struct), pointer :: Ocean_increment=> NULL()
      integer :: nk !< number of vertical layers used for DA
      type(ocean_grid_type), pointer :: Grid => NULL() !< MOM6 grid type and decomposition for the DA
+     type(ocean_grid_type), pointer :: G => NULL() !< MOM6 grid type and decomposition for the model
      type(pointer_mpp_domain), pointer, dimension(:) :: domains => NULL() !< Pointer to mpp_domain objects
      type(verticalGrid_type), pointer :: GV => NULL() !< vertical grid for DA
      type(domain2d), pointer :: mpp_domain => NULL() !< Pointer to a mpp domain object for DA
      type(grid_type), pointer :: oda_grid !< local tracer grid
      real, pointer, dimension(:,:,:) :: h => NULL() !<layer thicknesses (m or kg/m2) for DA
      type(thermo_var_ptrs), pointer :: tv => NULL() !< pointer to thermodynamic variables
+     type(thermo_var_ptrs), pointer :: tv_bc => NULL() !< pointer bias correction
      integer :: ni, nj !< global grid size
      logical :: reentrant_x !< grid is reentrant in the x direction
      logical :: reentrant_y !< grid is reentrant in the y direction
@@ -106,7 +117,9 @@ module MOM_oda_driver_mod
      type(remapping_CS) :: remapCS !< ALE control structure for remapping
      type(time_type) :: Time !< Current Analysis time
      type(diag_ctrl), pointer :: diag
+     logical :: do_bias_correction
      integer :: id_inc_t, id_inc_s
+     type(INC_CS) :: INC_CS
   end type ODA_CS
 
   type :: pointer_mpp_domain
@@ -116,7 +129,7 @@ module MOM_oda_driver_mod
   ! intermediate variables for remapped model T and S before redistribution
   integer, parameter :: seconds_per_hour = rseconds_per_hour
   integer, parameter :: seconds_per_day = rseconds_per_day
-  integer, parameter :: NO_ASSIM = 0, EAKF_ASSIM=1
+  integer, parameter :: NO_FILTER = 0, EAKF=1
   integer :: id_clock_oda_init
   integer :: id_clock_oda_prior
   integer :: id_clock_oda_filter
@@ -148,7 +161,7 @@ contains
     type(param_file_type) :: PF
     integer :: n, m, k, i, j, nk
     integer :: is,ie,js,je,isd,ied,jsd,jed
-    integer :: stdout_unit
+    integer :: stdout_unit, ioun, ierr, io_status
     character(len=32) :: assim_method
     integer :: npes_pm, ens_info(6), ni, nj
     character(len=128) :: mesg
@@ -157,9 +170,23 @@ contains
     character(len=200) :: inputdir, basin_file
     logical :: reentrant_x, reentrant_y, tripolar_N, symmetric
     character(len=80) :: remap_scheme
+    character(len=80) :: inc_file
+    integer, dimension(4) :: fld_sz
+    real :: missing_value
+
+    !---- namelist with default values
+    logical :: do_bias_correction = .false.
+    character(len=80) :: bias_correction_file
+    namelist /bias_correction_nml/ do_bias_correction, bias_correction_file
 
     if (associated(CS)) call mpp_error(FATAL,'Calling oda_init with associated control structure')
     allocate(CS)
+
+    ioun = open_namelist_file()
+    read(UNIT=ioun, NML=bias_correction_nml, IOSTAT=io_status)
+    ierr = check_nml_error(io_status,'bias_correction_nml')
+    call close_file(ioun)
+    CS%do_bias_correction = do_bias_correction
 
     !! Use ens0 parameters, which is set up solely for the analysis grid
     call get_MOM_input(PF,dirs,ensemble_num=0)
@@ -190,9 +217,9 @@ contains
 
     select case(lowercase(trim(assim_method)))
     case('eakf')
-        CS%assim_method = EAKF_ASSIM
-    case('no_assim')
-        CS%assim_method = NO_ASSIM
+        CS%assim_method = EAKF
+    case('none')
+        CS%assim_method = NO_FILTER
     case default
         call mpp_error(FATAL,'Invalid assimilation method provided')
     end select
@@ -226,6 +253,7 @@ contains
       call mpp_broadcast_domain(CS%domains(n)%mpp_domain)
     enddo
 
+    CS%G => G
     allocate(CS%Grid)
     !! params NIHALO_ODA, NJHALO_ODA set the DA halo size
     call MOM_domains_init(CS%Grid%Domain,PF,param_suffix='_ODA')
@@ -310,6 +338,22 @@ contains
     call mpp_clock_end(id_clock_oda_init)
     !! switch back to ensemble member pelist
     call set_current_pelist(CS%ensemble_pelist(CS%ensemble_id,:))
+
+    if (CS%do_bias_correction) then
+      call time_interp_external_init()
+      inc_file = trim(inputdir) // trim(bias_correction_file)
+      CS%INC_CS%T_id = init_external_field(inc_file, "temp_increment")
+      CS%INC_CS%S_id = init_external_field(inc_file, "salt_increment")
+      fld_sz = get_external_field_size(CS%INC_CS%T_id)
+      CS%INC_CS%fldno = 2
+      if (CS%nk .ne. fld_sz(3)) call mpp_error(FATAL,'Increment levels /= ODA levels')
+
+      isd = G%isd; ied = G%ied; jsd = G%jsd; jed = G%jed
+      allocate(CS%tv_bc)     ! storage for increment
+      allocate(CS%tv_bc%T(isd:ied,jsd:jed,CS%GV%ke)); CS%tv_bc%T(:,:,:)=0.0
+      allocate(CS%tv_bc%S(isd:ied,jsd:jed,CS%GV%ke)); CS%tv_bc%S(:,:,:)=0.0
+    endif
+
   end subroutine init_oda
 
   subroutine set_prior_tracer(Time, G, GV, h, tv, CS)
@@ -327,7 +371,7 @@ contains
     real, dimension(SZI_(G),SZJ_(G),SZK_(CS%Grid)) :: S
 
     !! return if not time for analysis
-    if (Time < CS%Time .or. .not. associated(CS)) return
+    if (Time < CS%Time .or. .not. associated(CS) .or. CS%assim_method .eq. NO_FILTER) return
 
     if (.not. ASSOCIATED(CS%Grid)) call MOM_ERROR(FATAL,'ODA_CS ensemble horizontal grid not associated')
     if (.not. ASSOCIATED(CS%GV)) call MOM_ERROR(FATAL,'ODA_CS ensemble vertical grid not associated')
@@ -379,7 +423,7 @@ contains
     logical :: used, get_inc
 
     !! return if not analysis time (retain pointers for h and tv)
-    if (Time < CS%Time) return
+    if (Time < CS%Time .or. CS%assim_method .eq. NO_FILTER) return
 
     !! switch to global pelist
     call set_current_pelist(CS%filter_pelist)
@@ -420,7 +464,49 @@ contains
     call mpp_update_domains(CS%tv%T, CS%domains(CS%ensemble_id)%mpp_domain)
     call mpp_update_domains(CS%tv%S, CS%domains(CS%ensemble_id)%mpp_domain)
 
+    CS%tv%T = CS%tv%T / (CS%assim_frequency * seconds_per_hour)
+    CS%tv%S = CS%tv%S / (CS%assim_frequency * seconds_per_hour)
+
   end subroutine get_posterior_tracer
+
+  subroutine get_bias_correction_tracer(Time, CS)
+    type(time_type), intent(in) :: Time !< the current model time
+    type(ODA_CS), pointer :: CS !< ocean DA control structure
+
+    integer :: i,j,k
+    real, allocatable, dimension(:,:,:) :: T_bias, S_bias
+    real, allocatable, dimension(:,:,:) :: mask_z
+    real, allocatable, dimension(:), target :: z_in, z_edges_in
+    real :: missing_value
+    integer,dimension(3) :: fld_sz
+
+    if(is_root_pe()) print *, 'Getting bias correction'
+
+    call mpp_clock_begin(id_clock_bias_correction)
+    call horiz_interp_and_extrap_tracer(CS%INC_CS%T_id,Time,1.0,CS%G,T_bias,&
+            mask_z,z_in,z_edges_in,missing_value,.true.,.false.,.false.)
+    call horiz_interp_and_extrap_tracer(CS%INC_CS%S_id,Time,1.0,CS%G,S_bias,&
+            mask_z,z_in,z_edges_in,missing_value,.true.,.false.,.false.)
+
+    fld_sz=shape(T_bias)
+    do i=1,fld_sz(1)
+       do j=1,fld_sz(2)
+          do k=1,fld_sz(3)
+             if (T_bias(i,j,k) .gt. 1.0E-3) T_bias(i,j,k) = 0.0
+             if (S_bias(i,j,k) .gt. 1.0E-3) S_bias(i,j,k) = 0.0
+          enddo
+       enddo
+    enddo
+
+    CS%tv_bc%T = T_bias
+    CS%tv_bc%S = S_bias
+
+    call mpp_update_domains(CS%tv_bc%T, CS%domains(CS%ensemble_id)%mpp_domain)
+    call mpp_update_domains(CS%tv_bc%S, CS%domains(CS%ensemble_id)%mpp_domain)
+
+    call mpp_clock_end(id_clock_bias_correction)
+
+  end subroutine get_bias_correction_tracer
 
   subroutine oda(Time, CS)
     type(time_type), intent(in) :: Time
@@ -432,19 +518,26 @@ contains
 
     if ( Time >= CS%Time .and. associated(CS) ) then
 
-      !! switch to global pelist
-      call set_current_pelist(CS%filter_pelist)
-      call mpp_clock_begin(id_clock_oda_filter)
-      !! get profiles for current assimilation step 
-      call get_profiles(Time, CS%Profiles, CS%CProfiles)
-      call ensemble_filter(CS%Ocean_prior, CS%Ocean_posterior, CS%CProfiles, CS%kdroot, CS%mpp_domain, CS%oda_grid)
-      call mpp_clock_end(id_clock_oda_filter)
-      !! switch back to ensemble member pelist
-      call set_current_pelist(CS%ensemble_pelist(CS%ensemble_id,:))
+      if ( CS%assim_method > NO_FILTER) then
+        
+        !! switch to global pelist
+        call set_current_pelist(CS%filter_pelist)
+        call mpp_clock_begin(id_clock_oda_filter)
 
-      call get_posterior_tracer(Time, CS, increment=.true.)
-      CS%tv%T = CS%tv%T / (CS%assim_frequency * seconds_per_hour)
-      CS%tv%S = CS%tv%S / (CS%assim_frequency * seconds_per_hour)
+        !! get profiles for current assimilation step 
+        call get_profiles(Time, CS%Profiles, CS%CProfiles)
+        call ensemble_filter(CS%Ocean_prior, CS%Ocean_posterior, CS%CProfiles, CS%kdroot, CS%mpp_domain, CS%oda_grid)
+        
+        call mpp_clock_end(id_clock_oda_filter)
+
+        !! switch back to ensemble member pelist
+        call set_current_pelist(CS%ensemble_pelist(CS%ensemble_id,:))
+        
+        call get_posterior_tracer(Time, CS, increment=.true.)
+
+      endif
+
+      if (CS%do_bias_correction) call get_bias_correction_tracer(Time, CS)
 
     end if
 
@@ -543,23 +636,45 @@ contains
     type(ODA_CS), pointer :: CS     !< the data assimilation structure
   
     !! local variables
+    integer :: yr, mon, day, hr, min, sec
     integer :: i, j
-    integer :: isc, iec, jsc, jec
+    integer :: isc, iec, jsc, jec, k
     real, dimension(SZI_(G),SZJ_(G),SZK_(G)) :: T_inc
     real, dimension(SZI_(G),SZJ_(G),SZK_(G)) :: S_inc
+    real, dimension(SZI_(G),SZJ_(G),SZK_(CS%Grid)) :: T
+    real, dimension(SZI_(G),SZJ_(G),SZK_(CS%Grid)) :: S
+    real :: missing_value
 
     if (.not. associated(CS)) return
+    if (CS%assim_method .eq. NO_FILTER .and. (.not. CS%do_bias_correction)) return
 
     call mpp_clock_begin(id_clock_apply_increments)
 
-    T_inc = 0.0; S_inc = 0.0
+    T_inc = 0.0; S_inc = 0.0; T = 0.0; S = 0.0
+    if (CS%assim_method > 0 ) then
+      T = T + CS%tv%T
+      S = S + CS%tv%S
+    endif
+    if (CS%do_bias_correction ) then
+      T = T + CS%tv_bc%T
+      S = S + CS%tv_bc%S
+    endif
+
     isc=G%isc; iec=G%iec; jsc=G%jsc; jec=G%jec
     do j=jsc,jec; do i=isc,iec
-      call remapping_core_h(CS%remapCS, CS%nk, CS%h(i,j,:), CS%tv%T(i,j,:), &
+      call remapping_core_h(CS%remapCS, CS%nk, CS%h(i,j,:), T(i,j,:), &
               G%ke, h(i,j,:), T_inc(i,j,:))
-      call remapping_core_h(CS%remapCS, CS%nk, CS%h(i,j,:), CS%tv%S(i,j,:), &
+      call remapping_core_h(CS%remapCS, CS%nk, CS%h(i,j,:), S(i,j,:), &
               G%ke, h(i,j,:), S_inc(i,j,:))
     enddo; enddo
+ 
+    !missing_value = get_external_field_missing(CS%INC_CS%T_id)
+    !do k = 1,G%ke
+       !call myStats(T_inc(:,:,k),missing_value,1,G%ied,1,G%jed,k,'Applied T increments')
+    !enddo
+    !do k = 1,G%ke
+       !call myStats(S_inc(:,:,k),missing_value,1,G%ied,1,G%jed,k,'Applied S increments')
+    !enddo
 
     call mpp_update_domains(T_inc, G%Domain%mpp_domain)
     call mpp_update_domains(S_inc, G%Domain%mpp_domain)
