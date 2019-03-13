@@ -117,6 +117,12 @@ module MOM_oda_driver_mod
   integer, parameter :: seconds_per_hour = rseconds_per_hour
   integer, parameter :: seconds_per_day = rseconds_per_day
   integer, parameter :: NO_ASSIM = 0, EAKF_ASSIM=1
+  integer :: id_clock_oda_init
+  integer :: id_clock_oda_prior
+  integer :: id_clock_oda_filter
+  integer :: id_clock_oda_posterior
+  integer :: id_clock_bias_correction
+  integer :: id_clock_apply_increments
 
 contains
 
@@ -140,7 +146,7 @@ contains
     type(grid_type), pointer :: T_grid => NULL() !< global tracer grid
     !real, dimension(:,:,:), allocatable :: h
     type(param_file_type) :: PF
-    integer :: n, m, k, i, j, nk, id_oda_init
+    integer :: n, m, k, i, j, nk
     integer :: is,ie,js,je,isd,ied,jsd,jed
     integer :: stdout_unit
     character(len=32) :: assim_method
@@ -200,12 +206,17 @@ contains
     call get_ensemble_pelist(CS%ensemble_pelist,'ocean')
     call get_ensemble_filter_pelist(CS%filter_pelist,'ocean')
 
+    id_clock_apply_increments = mpp_clock_id('(ODA applying increments)')
+    id_clock_bias_correction = mpp_clock_id('(Bias correction through increments)')
     !! Switch to global ocean pelist
     call set_current_pelist(CS%filter_pelist)
     if(is_root_pe()) print *, 'Initialize ODA'
 
-    id_oda_init = mpp_clock_id('(ODA initialization computation)')
-    call mpp_clock_begin(id_oda_init)
+    id_clock_oda_init = mpp_clock_id('(ODA initialization)')
+    id_clock_oda_prior = mpp_clock_id('(ODA setting prior)')
+    id_clock_oda_filter = mpp_clock_id('(ODA filter computation)')
+    id_clock_oda_posterior = mpp_clock_id('(ODA getting posterior)')
+    call mpp_clock_begin(id_clock_oda_init)
 
     !! set up and broadcast ensemble domains to enable redistribution later
     allocate(CS%domains(CS%ensemble_size))
@@ -296,7 +307,7 @@ contains
 
     deallocate(T_grid)
     !deallocate(h)
-    call mpp_clock_end(id_oda_init)
+    call mpp_clock_end(id_clock_oda_init)
     !! switch back to ensemble member pelist
     call set_current_pelist(CS%ensemble_pelist(CS%ensemble_id,:))
   end subroutine init_oda
@@ -311,7 +322,6 @@ contains
 
     integer :: i, j, m, n, ss
     integer :: isc, iec, jsc, jec
-    integer :: id, id_oda_prior
     logical :: used
     real, dimension(SZI_(G),SZJ_(G),SZK_(CS%Grid)) :: T
     real, dimension(SZI_(G),SZJ_(G),SZK_(CS%Grid)) :: S
@@ -324,8 +334,7 @@ contains
 
     !! switch to global pelist
     call set_current_pelist(CS%filter_pelist)
-    id_oda_prior = mpp_clock_id('(ODA setting prior)')
-    call mpp_clock_begin(id_oda_prior)
+    call mpp_clock_begin(id_clock_oda_prior)
     if(is_root_pe()) print *, 'Setting prior'
 
     T = 0.0; S = 0.0
@@ -349,7 +358,7 @@ contains
       call mpp_update_domains(CS%Ocean_prior%S(:,:,:,m), CS%mpp_domain)
     enddo
 
-    call mpp_clock_end(id_oda_prior)
+    call mpp_clock_end(id_clock_oda_prior)
     !! switch back to ensemble member pelist
     call set_current_pelist(CS%ensemble_pelist(CS%ensemble_id,:))
 
@@ -366,7 +375,7 @@ contains
     type(thermo_var_ptrs), pointer, optional :: tv   !< A structure pointing to various thermodynamic variables
     logical, optional, intent(in) :: increment
 
-    integer :: i, j, m, id_oda_posterior
+    integer :: i, j, m
     logical :: used, get_inc
 
     !! return if not analysis time (retain pointers for h and tv)
@@ -375,8 +384,7 @@ contains
     !! switch to global pelist
     call set_current_pelist(CS%filter_pelist)
 
-    id_oda_posterior = mpp_clock_id('(ODA getting posterior)')
-    call mpp_clock_begin(id_oda_posterior)
+    call mpp_clock_begin(id_clock_oda_posterior)
     if(is_root_pe()) print *, 'Getting posterior'
     if( present(h) .and. .not. associated(h) ) h => CS%h ! Get analysis thickness
 
@@ -405,7 +413,7 @@ contains
       endif
     end do
 
-    call mpp_clock_end(id_oda_posterior)
+    call mpp_clock_end(id_clock_oda_posterior)
     !! switch back to ensemble member pelist
     call set_current_pelist(CS%ensemble_pelist(CS%ensemble_id,:))
 
@@ -426,9 +434,11 @@ contains
 
       !! switch to global pelist
       call set_current_pelist(CS%filter_pelist)
+      call mpp_clock_begin(id_clock_oda_filter)
       !! get profiles for current assimilation step 
       call get_profiles(Time, CS%Profiles, CS%CProfiles)
       call ensemble_filter(CS%Ocean_prior, CS%Ocean_posterior, CS%CProfiles, CS%kdroot, CS%mpp_domain, CS%oda_grid)
+      call mpp_clock_end(id_clock_oda_filter)
       !! switch back to ensemble member pelist
       call set_current_pelist(CS%ensemble_pelist(CS%ensemble_id,:))
 
@@ -533,15 +543,14 @@ contains
     type(ODA_CS), pointer :: CS     !< the data assimilation structure
   
     !! local variables
-    integer :: i, j, id_oda_apply_increments
+    integer :: i, j
     integer :: isc, iec, jsc, jec
     real, dimension(SZI_(G),SZJ_(G),SZK_(G)) :: T_inc
     real, dimension(SZI_(G),SZJ_(G),SZK_(G)) :: S_inc
 
     if (.not. associated(CS)) return
 
-    id_oda_apply_increments = mpp_clock_id('(ODA applying increments)')
-    call mpp_clock_begin(id_oda_apply_increments)
+    call mpp_clock_begin(id_clock_apply_increments)
 
     T_inc = 0.0; S_inc = 0.0
     isc=G%isc; iec=G%iec; jsc=G%jsc; jec=G%jec
@@ -567,7 +576,7 @@ contains
     call disable_averaging(CS%diag)
 
     call diag_update_remap_grids(CS%diag)
-    call mpp_clock_end(id_oda_apply_increments)
+    call mpp_clock_end(id_clock_apply_increments)
 
     return
 
