@@ -37,6 +37,8 @@ module MOM_oda_driver_mod
   use constants_mod, only : rseconds_per_hour=>seconds_per_hour, rseconds_per_day=>seconds_per_day
   ! ODA Modules
   use ocean_da_types_mod, only : grid_type, ocean_profile_type, ocean_control_struct
+  use ocean_da_types_mod, only : TEMP_ID, SALT_ID
+  use ocean_da_types_mod, only : ODA_PFL, ODA_XBT, ODA_MRB, ODA_OISST
   use ocean_da_core_mod, only : ocean_da_core_init, get_profiles
   use eakf_oda_mod, only : ensemble_filter
   use write_ocean_obs_mod, only : open_profile_file
@@ -118,6 +120,7 @@ module MOM_oda_driver_mod
      type(time_type) :: Time !< Current Analysis time
      type(diag_ctrl), pointer :: diag
      logical :: do_bias_correction
+     logical :: write_obs
      integer :: id_inc_t, id_inc_s
      type(INC_CS) :: INC_CS
   end type ODA_CS
@@ -136,6 +139,7 @@ module MOM_oda_driver_mod
   integer :: id_clock_oda_posterior
   integer :: id_clock_bias_correction
   integer :: id_clock_apply_increments
+  integer :: temp_fid, salt_fid ! profile file handle
 
 contains
 
@@ -175,18 +179,21 @@ contains
     real :: missing_value
 
     !---- namelist with default values
+    logical :: write_obs = .false.
+    character(len=80) :: obs_file
     logical :: do_bias_correction = .false.
     character(len=80) :: bias_correction_file
-    namelist /bias_correction_nml/ do_bias_correction, bias_correction_file
+    namelist /oda_init_nml/ write_obs, obs_file, do_bias_correction, bias_correction_file
 
     if (associated(CS)) call mpp_error(FATAL,'Calling oda_init with associated control structure')
     allocate(CS)
 
     ioun = open_namelist_file()
-    read(UNIT=ioun, NML=bias_correction_nml, IOSTAT=io_status)
-    ierr = check_nml_error(io_status,'bias_correction_nml')
+    read(UNIT=ioun, NML=oda_init_nml, IOSTAT=io_status)
+    ierr = check_nml_error(io_status,'oda_init_nml')
     call close_file(ioun)
     CS%do_bias_correction = do_bias_correction
+    CS%write_obs = write_obs
 
     !! Use ens0 parameters, which is set up solely for the analysis grid
     call get_MOM_input(PF,dirs,ensemble_num=0)
@@ -354,6 +361,10 @@ contains
       allocate(CS%tv_bc%S(isd:ied,jsd:jed,CS%GV%ke)); CS%tv_bc%S(:,:,:)=0.0
     endif
 
+    if (CS%write_obs) then
+       temp_fid = open_profile_file("temp_"//trim(obs_file))
+       salt_fid = open_profile_file("salt_"//trim(obs_file))
+    end if
   end subroutine init_oda
 
   subroutine set_prior_tracer(Time, G, GV, h, tv, CS)
@@ -530,6 +541,7 @@ contains
         
         call mpp_clock_end(id_clock_oda_filter)
 
+        if (CS%write_obs) call save_obs_diff(CS%CProfiles)
         !! switch back to ensemble member pelist
         call set_current_pelist(CS%ensemble_pelist(CS%ensemble_id,:))
         
@@ -547,6 +559,8 @@ contains
   subroutine oda_end(CS)
     type(ODA_CS), intent(inout) :: CS
 
+    call close_profile_file(temp_fid)
+    call close_profile_file(salt_fid)
   end subroutine oda_end
 
   subroutine init_ocean_ensemble(CS,Grid,GV,ens_size)
@@ -602,27 +616,22 @@ contains
     return
   end subroutine set_analysis_time
 
-  subroutine save_obs_diff(filename,CS)
-    character(len=*), intent(in) :: filename
-    type(ODA_CS), pointer :: CS
+  subroutine save_obs_diff(profiles)
+    type(ocean_profile_type), pointer :: profiles
 
-    integer :: fid ! profile file handle
     type(ocean_profile_type), pointer :: Prof=>NULL()
-
-    fid = open_profile_file(trim(filename), nvar=2, thread=MPP_SINGLE, fset=MPP_SINGLE)
-    Prof=>CS%CProfiles
-
-    !! switch to global pelist
-    !call set_current_pelist(CS%filter_pelist)
+    Prof=>profiles
 
     do while (associated(Prof))
-      call write_profile(fid,Prof)
+      if(Prof%compute .and. Prof%inst_type .eq. ODA_PFL) then
+        if(Prof%variable .eq. TEMP_ID) then
+          call write_profile(temp_fid,Prof)
+        elseif(Prof%variable .eq. SALT_ID) then
+          call write_profile(salt_fid,Prof)
+        endif
+      endif
       Prof=>Prof%cnext
     enddo
-    call close_profile_file(fid)
-
-    !! switch back to ensemble member pelist
-    !call set_current_pelist(CS%ensemble_pelist(CS%ensemble_id,:))
 
     return
   end subroutine save_obs_diff
