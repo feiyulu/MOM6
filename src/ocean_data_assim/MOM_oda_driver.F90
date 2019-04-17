@@ -118,6 +118,7 @@ module MOM_oda_driver_mod
      type(time_type) :: Time !< Current Analysis time
      type(diag_ctrl), pointer :: diag
      logical :: do_bias_correction
+     real :: correction_multiplier
      integer :: id_inc_t, id_inc_s
      type(INC_CS) :: INC_CS
   end type ODA_CS
@@ -177,7 +178,9 @@ contains
     !---- namelist with default values
     logical :: do_bias_correction = .false.
     character(len=80) :: bias_correction_file
-    namelist /bias_correction_nml/ do_bias_correction, bias_correction_file
+    real :: correction_multiplier = 1.0
+    namelist /bias_correction_nml/ do_bias_correction, bias_correction_file, correction_multiplier
+
 
     if (associated(CS)) call mpp_error(FATAL,'Calling oda_init with associated control structure')
     allocate(CS)
@@ -187,6 +190,7 @@ contains
     ierr = check_nml_error(io_status,'bias_correction_nml')
     call close_file(ioun)
     CS%do_bias_correction = do_bias_correction
+    CS%correction_multiplier = correction_multiplier
 
     !! Use ens0 parameters, which is set up solely for the analysis grid
     call get_MOM_input(PF,dirs,ensemble_num=0)
@@ -342,8 +346,10 @@ contains
     if (CS%do_bias_correction) then
       call time_interp_external_init()
       inc_file = trim(inputdir) // trim(bias_correction_file)
-      CS%INC_CS%T_id = init_external_field(inc_file, "temp_increment")
-      CS%INC_CS%S_id = init_external_field(inc_file, "salt_increment")
+      CS%INC_CS%T_id = init_external_field(inc_file, "temp_increment", &
+              correct_leap_year_inconsistency=.true.,verbose=.true.)
+      CS%INC_CS%S_id = init_external_field(inc_file, "salt_increment", &
+              correct_leap_year_inconsistency=.true.,verbose=.true.)
       fld_sz = get_external_field_size(CS%INC_CS%T_id)
       CS%INC_CS%fldno = 2
       if (CS%nk .ne. fld_sz(3)) call mpp_error(FATAL,'Increment levels /= ODA levels')
@@ -498,8 +504,8 @@ contains
        enddo
     enddo
 
-    CS%tv_bc%T = T_bias
-    CS%tv_bc%S = S_bias
+    CS%tv_bc%T = T_bias * CS%correction_multiplier
+    CS%tv_bc%S = S_bias * CS%correction_multiplier
 
     call mpp_update_domains(CS%tv_bc%T, CS%domains(CS%ensemble_id)%mpp_domain)
     call mpp_update_domains(CS%tv_bc%S, CS%domains(CS%ensemble_id)%mpp_domain)
