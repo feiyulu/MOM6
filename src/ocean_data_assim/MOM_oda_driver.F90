@@ -283,7 +283,7 @@ contains
     call ALE_init(PF, CS%GV, US, dG%max_depth, CS%ALE_CS)
     call MOM_grid_init(CS%Grid, PF)
     call ALE_updateVerticalGridType(CS%ALE_CS,CS%GV)
-    call copy_dyngrid_to_MOM_grid(dG, CS%Grid)
+    call copy_dyngrid_to_MOM_grid(dG, CS%Grid, US)
     CS%mpp_domain => CS%Grid%Domain%mpp_domain
     CS%Grid%ke = CS%GV%ke
     CS%nk = CS%GV%ke
