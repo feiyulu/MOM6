@@ -356,9 +356,9 @@ contains
       call time_interp_external_init()
       inc_file = trim(inputdir) // trim(bias_correction_file)
       CS%INC_CS%T_id = init_external_field(inc_file, "temp_increment", &
-              correct_leap_year_inconsistency=.true.,verbose=.true.)
+              correct_leap_year_inconsistency=.true.,verbose=.true.,domain=G%Domain%mpp_domain)
       CS%INC_CS%S_id = init_external_field(inc_file, "salt_increment", &
-              correct_leap_year_inconsistency=.true.,verbose=.true.)
+              correct_leap_year_inconsistency=.true.,verbose=.true.,domain=G%Domain%mpp_domain)
       fld_sz = get_external_field_size(CS%INC_CS%T_id)
       CS%INC_CS%fldno = 2
       if (CS%nk .ne. fld_sz(3)) call mpp_error(FATAL,'Increment levels /= ODA levels')
@@ -503,9 +503,9 @@ contains
 
     call mpp_clock_begin(id_clock_bias_correction)
     call horiz_interp_and_extrap_tracer(CS%INC_CS%T_id,Time,1.0,CS%G,T_bias,&
-            mask_z,z_in,z_edges_in,missing_value,.true.,.false.,.false.)
+            mask_z,z_in,z_edges_in,missing_value,.true.,.false.,.false.,.true.)
     call horiz_interp_and_extrap_tracer(CS%INC_CS%S_id,Time,1.0,CS%G,S_bias,&
-            mask_z,z_in,z_edges_in,missing_value,.true.,.false.,.false.)
+            mask_z,z_in,z_edges_in,missing_value,.true.,.false.,.false.,.true.)
 
     fld_sz=shape(T_bias)
     do i=1,fld_sz(1)
