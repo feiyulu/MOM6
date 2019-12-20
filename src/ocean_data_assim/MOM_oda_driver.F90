@@ -41,9 +41,9 @@ use ocean_da_types_mod, only : grid_type, ocean_profile_type, ocean_control_stru
 use ocean_da_core_mod, only : ocean_da_core_init, get_profiles
 use ocean_da_types_mod, only : TEMP_ID, SALT_ID
 use ocean_da_types_mod, only : ODA_PFL, ODA_XBT, ODA_MRB, ODA_OISST
-#ifdef ENABLE_FILTER
+!#ifdef ENABLE_FILTER
 use eakf_oda_mod, only : ensemble_filter
-#endif
+!#endif
 use write_ocean_obs_mod, only : open_profile_file
 use write_ocean_obs_mod, only : write_profile,close_profile_file
 use kdtree, only : kd_root !# JEDI
@@ -150,7 +150,7 @@ end type ptr_mpp_domain
   integer :: temp_fid !< profile file handles for temperature
   integer :: salt_fid !< profile file handles for salinity
 
-  real, parameter :: seconds_per_hour = 8.64e4 !< number of seconds per hour (s)
+  real, parameter :: seconds_per_hour = 3.6e3 !< number of seconds per hour (s)
 
 contains
 !! initialize analysis grid and ODA-related variables
@@ -350,6 +350,11 @@ contains
     CS%Time=Time
     !CS%Time=increment_time(Time,CS%assim_frequency*seconds_per_hour)
 
+    if (CS%write_obs) then
+       temp_fid = open_profile_file("temp_"//trim(obs_file))
+       salt_fid = open_profile_file("salt_"//trim(obs_file))
+    end if
+
     deallocate(T_grid)
     !deallocate(h)
     call cpu_clock_end(id_clock_oda_init)
@@ -372,11 +377,6 @@ contains
       allocate(CS%tv_bc%T(isd:ied,jsd:jed,CS%GV%ke)); CS%tv_bc%T(:,:,:)=0.0
       allocate(CS%tv_bc%S(isd:ied,jsd:jed,CS%GV%ke)); CS%tv_bc%S(:,:,:)=0.0
     endif
-
-    if (CS%write_obs) then
-       temp_fid = open_profile_file("temp_"//trim(obs_file))
-       salt_fid = open_profile_file("salt_"//trim(obs_file))
-    end if
 
 end subroutine init_oda
 
@@ -555,9 +555,9 @@ subroutine oda(Time, CS)
 
         !! get profiles for current assimilation step
         call get_profiles(Time, CS%Profiles, CS%CProfiles)
-#ifdef ENABLE_FILTER
+!#ifdef ENABLE_FILTER
         call ensemble_filter(CS%Ocean_prior, CS%Ocean_posterior, CS%CProfiles, CS%kdroot, CS%mpp_domain, CS%oda_grid)
-#endif
+!#endif
         call cpu_clock_end(id_clock_oda_filter)
 
         if (CS%write_obs) call save_obs_diff(CS%CProfiles)
