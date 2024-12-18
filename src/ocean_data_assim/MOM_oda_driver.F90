@@ -67,7 +67,9 @@ public :: set_analysis_time, oda, apply_oda_tracer_increments
 
 !>@{ CPU time clock ID
 integer :: id_clock_oda_init
+integer :: id_clock_get_prior
 integer :: id_clock_bias_adjustment
+integer :: id_clock_ensemble_filter
 integer :: id_clock_apply_increments
 !>@}
 
@@ -88,6 +90,8 @@ end type INC_CS
 !> Control structure that contains a transpose of the ocean state across ensemble members.
 type, public :: ODA_CS ; private
   type(ocean_control_struct), pointer :: Ocean_prior=> NULL() !< ensemble ocean prior states in DA space
+  type(ocean_control_struct), pointer :: Ocean_prior_inst=> NULL() !< ensemble ocean prior states in DA space
+  real :: prior_ave_counter
   type(ocean_control_struct), pointer :: Ocean_posterior=> NULL() !< ensemble ocean posterior states
                                                                   !! or increments to prior in DA space
   type(ocean_control_struct), pointer :: Ocean_increment=> NULL() !< A separate structure for
@@ -126,6 +130,7 @@ type, public :: ODA_CS ; private
   integer, pointer, dimension(:,:) :: ensemble_pelist !< PE list for ensemble members
   integer, pointer, dimension(:) :: filter_pelist !< PE list for ensemble members
   real :: assim_interval !< analysis interval [ T ~> s]
+  real :: prior_interval !< analysis interval [ T ~> s]
   ! Profiles local to the analysis domain
   type(ocean_profile_type), pointer :: Profiles => NULL() !< pointer to linked list of all available profiles
   type(ocean_profile_type), pointer :: CProfiles => NULL()!< pointer to linked list of current profiles
@@ -135,6 +140,7 @@ type, public :: ODA_CS ; private
   type(regridding_CS) :: regridCS !< ALE control structure for regridding
   type(remapping_CS) :: remapCS !< ALE control structure for remapping
   type(time_type) :: Time !< Current Analysis time
+  type(time_type) :: Prior_Time !< Current Prior time for time averaging
   type(diag_ctrl), pointer :: diag_cs=> NULL() !<Pointer to diagnostics control structure
   type(INC_CS) :: INC_CS !< A Structure containing integer file handles for bias adjustment
   integer :: id_inc_t !< A diagnostic handle for the temperature climatological adjustment
@@ -189,6 +195,10 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
   if (associated(CS)) call MOM_error(FATAL, 'Calling oda_init with associated control structure')
   allocate(CS)
 
+  id_clock_get_prior=cpu_clock_id('(ODA getting prior)')
+  id_clock_bias_adjustment=cpu_clock_id('(ODA getting bias correction)')
+  id_clock_ensemble_filter=cpu_clock_id('(ODA ensemble filter)')
+  id_clock_apply_increments=cpu_clock_id('(ODA applying increments)')
   id_clock_oda_init=cpu_clock_id('(ODA initialization)')
   call cpu_clock_begin(id_clock_oda_init)
 
@@ -203,6 +213,8 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
        "Valid methods are: \'EAKF\',\'OI\', and \'NO_ASSIM\'", default='NO_ASSIM')
   call get_param(PF, mdl, "ASSIM_INTERVAL", CS%assim_interval,  &
        "data assimilation update interval in hours",default=-1.0,units="hours",scale=3600.*US%s_to_T)
+  call get_param(PF, mdl, "PRIOR_INTERVAL", CS%prior_interval,  &
+       "prior averaging interval in hours",default=2.0,units="hours",scale=3600.*US%s_to_T)
   if (CS%assim_interval < 0.) then
      call get_param(PF, mdl, "ASSIM_FREQUENCY", CS%assim_interval,  &
           "data assimilation update  in hours. This parameter name will \n"//&
@@ -313,6 +325,9 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
   ! initialize storage for prior and posterior
   allocate(CS%Ocean_prior)
   call init_ocean_ensemble(CS%Ocean_prior,CS%Grid,CS%GV,CS%ensemble_size)
+  allocate(CS%Ocean_prior_inst)
+  call init_ocean_ensemble(CS%Ocean_prior_inst,CS%Grid,CS%GV,CS%ensemble_size)
+  CS%prior_ave_counter = 0.0
   allocate(CS%Ocean_posterior)
   call init_ocean_ensemble(CS%Ocean_posterior,CS%Grid,CS%GV,CS%ensemble_size)
   allocate(CS%Ocean_increment)
@@ -373,6 +388,7 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
   call ocean_da_core_init(CS%mpp_domain, T_grid, CS%Profiles, Time)
   deallocate(T_grid)
   CS%Time = Time
+  CS%Prior_Time = Time
   !! switch back to ensemble member pelist
   call set_PElist(CS%ensemble_pelist(CS%ensemble_id,:))
 
@@ -417,9 +433,13 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, CS)
   integer :: i, j, m
   integer :: isc, iec, jsc, jec
   real :: h_neglect, h_neglect_edge                 ! small thicknesses [H ~> m or kg m-2]
+  integer :: isd, ied, jsd, jed
+  character(len=160) :: mesg  ! The text of an error message
+  integer :: yr, mon, day, hr, min, sec
 
-  ! return if not time for analysis
-  if (Time < CS%Time) return
+  ! return if not time for averaging prio
+  if (Time < CS%Prior_Time) return
+  call cpu_clock_begin(id_clock_get_prior)
 
   if (.not. associated(CS%Grid)) call MOM_ERROR(FATAL,'ODA_CS ensemble horizontal grid not associated')
   if (.not. associated(CS%GV)) call MOM_ERROR(FATAL,'ODA_CS ensemble vertical grid not associated')
@@ -449,21 +469,55 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, CS)
          CS%nk, CS%h(i,j,:), S(i,j,:), h_neglect, h_neglect_edge)
   enddo ; enddo
   ! cast ensemble members to the analysis domain
+  if (CS%prior_ave_counter < 0.5) then
+    CS%Ocean_prior%T = 0.0
+    CS%Ocean_prior%S = 0.0
+    call MOM_mesg("ODA Reset background accumulation")
+    ! do m=1,CS%ensemble_size
+      ! call redistribute_array(CS%domains(m)%mpp_domain, T,&
+      !      CS%mpp_domain, CS%Ocean_prior%T(:,:,:,m), complete=.true.)
+      ! call redistribute_array(CS%domains(m)%mpp_domain, S,&
+      !      CS%mpp_domain, CS%Ocean_prior%S(:,:,:,m), complete=.true.)
+    ! enddo
+  endif
+  
   do m=1,CS%ensemble_size
     call redistribute_array(CS%domains(m)%mpp_domain, T,&
-         CS%mpp_domain, CS%Ocean_prior%T(:,:,:,m), complete=.true.)
+        CS%mpp_domain, CS%Ocean_prior_inst%T(:,:,:,m), complete=.true.)
     call redistribute_array(CS%domains(m)%mpp_domain, S,&
-         CS%mpp_domain, CS%Ocean_prior%S(:,:,:,m), complete=.true.)
+        CS%mpp_domain, CS%Ocean_prior_inst%S(:,:,:,m), complete=.true.)
   enddo
 
+  CS%Ocean_prior%T = CS%Ocean_prior%T + CS%Ocean_prior_inst%T
+  CS%Ocean_prior%S = CS%Ocean_prior%S + CS%Ocean_prior_inst%S
+
   do m=1,CS%ensemble_size
+    call pass_var(CS%Ocean_prior_inst%T(:,:,:,m),CS%Grid%domain)
+    call pass_var(CS%Ocean_prior_inst%S(:,:,:,m),CS%Grid%domain)
     call pass_var(CS%Ocean_prior%T(:,:,:,m),CS%Grid%domain)
     call pass_var(CS%Ocean_prior%S(:,:,:,m),CS%Grid%domain)
   enddo
 
+  CS%prior_ave_counter = CS%prior_ave_counter + 1.0
+
   !! switch back to ensemble member pelist
   call set_PElist(CS%ensemble_pelist(CS%ensemble_id,:))
 
+  if (Time >= CS%Prior_Time) then
+    ! increment the analysis time to the next step
+    CS%Prior_Time = CS%Prior_Time + real_to_time(CS%US%T_to_s*(CS%prior_interval))
+    call get_date(Time, yr, mon, day, hr, min, sec)
+    write(mesg,*) 'Count:', CS%prior_ave_counter,'Model Time: ', yr, mon, day, hr, min, sec
+    call MOM_mesg("ODA get_prior: "//trim(mesg))
+  endif
+  if (CS%Prior_Time < Time) then
+    call MOM_error(FATAL, " set_prior_time: " // &
+         "prior averaging interval appears to be shorter than " // &
+         "the model timestep")
+  endif
+
+  call cpu_clock_end(id_clock_get_prior)
+  
   return
 
 end subroutine set_prior_tracer
@@ -531,19 +585,39 @@ end subroutine get_posterior_tracer
 subroutine oda(Time, CS)
   type(time_type), intent(in) :: Time !< the current model time
   type(oda_CS), pointer :: CS !< A pointer the ocean DA control structure
+  integer :: m
+  character(len=160) :: mesg  ! The text of an error message
+  integer :: yr, mon, day, hr, min, sec
 
   if ( Time >= CS%Time ) then
+    call cpu_clock_begin(id_clock_ensemble_filter)
 
     !! switch to global pelist
     call set_PElist(CS%filter_pelist)
     call get_profiles(Time, CS%Profiles, CS%CProfiles)
 #ifdef ENABLE_ECDA
+    write(mesg,*) 'Count:', CS%prior_ave_counter,'Model Time: ', yr, mon, day, hr, min, sec
+    call MOM_mesg("ODA averaging prior: "//trim(mesg))
+
+    CS%Ocean_prior%T = CS%Ocean_prior%T / (CS%prior_ave_counter)
+    CS%Ocean_prior%S = CS%Ocean_prior%S / (CS%prior_ave_counter)
+
+    do m=1,CS%ensemble_size
+      call pass_var(CS%Ocean_prior%T(:,:,:,m),CS%Grid%domain)
+      call pass_var(CS%Ocean_prior%S(:,:,:,m),CS%Grid%domain)
+    enddo
+
     call ensemble_filter(CS%Ocean_prior, CS%Ocean_posterior, CS%CProfiles, CS%kdroot, CS%mpp_domain, CS%oda_grid)
 #endif
+
+    CS%prior_ave_counter = 0.0
+
     !! switch back to ensemble member pelist
     call set_PElist(CS%ensemble_pelist(CS%ensemble_id,:))
     call get_posterior_tracer(Time, CS, increment=.true.)
     if (CS%do_bias_adjustment) call get_bias_correction_tracer(Time, CS%US, CS)
+  
+   call cpu_clock_end(id_clock_ensemble_filter)
 
   endif
 
@@ -620,9 +694,9 @@ subroutine init_ocean_ensemble(CS,Grid,GV,ens_size)
   is=Grid%isd;ie=Grid%ied
   js=Grid%jsd;je=Grid%jed
   CS%ensemble_size=ens_size
-  allocate(CS%T(is:ie,js:je,nk,ens_size))
-  allocate(CS%S(is:ie,js:je,nk,ens_size))
-  allocate(CS%SSH(is:ie,js:je,ens_size))
+  allocate(CS%T(is:ie,js:je,nk,ens_size),source=0.0)
+  allocate(CS%S(is:ie,js:je,nk,ens_size),source=0.0)
+  ! allocate(CS%SSH(is:ie,js:je,ens_size))
 !  allocate(CS%id_t(ens_size), source=-1)
 !  allocate(CS%id_s(ens_size), source=-1)
 !  allocate(CS%U(is:ie,js:je,nk,ens_size))
