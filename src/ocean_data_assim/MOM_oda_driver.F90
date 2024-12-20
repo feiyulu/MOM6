@@ -25,7 +25,8 @@ use MOM_time_manager, only : operator(==), operator(<)
 use MOM_cpu_clock, only : cpu_clock_begin, cpu_clock_end, cpu_clock_id
 use MOM_horizontal_regridding, only : horiz_interp_and_extrap_tracer
 ! ODA Modules
-use ocean_da_types_mod, only : grid_type, ocean_profile_type, ocean_control_struct
+use ocean_da_types_mod, only : grid_type, ocean_profile_type
+use ocean_da_types_mod, only : ensemble_control_struct, ocean_control_struct
 use ocean_da_core_mod, only : ocean_da_core_init, get_profiles
 !This preprocessing directive enables the SPEAR online ensemble data assimilation
 !configuration. Existing community based APIs for data assimilation are currently
@@ -89,13 +90,13 @@ end type INC_CS
 
 !> Control structure that contains a transpose of the ocean state across ensemble members.
 type, public :: ODA_CS ; private
-  type(ocean_control_struct), pointer :: Ocean_prior=> NULL() !< ensemble ocean prior states in DA space
-  type(ocean_control_struct), pointer :: Ocean_prior_inst=> NULL() !< ensemble ocean prior states in DA space
+  type(ensemble_control_struct), pointer :: Ocean_prior=> NULL() !< ensemble ocean prior states in DA space
   real :: prior_ave_counter
-  type(ocean_control_struct), pointer :: Ocean_posterior=> NULL() !< ensemble ocean posterior states
+  type(ensemble_control_struct), pointer :: Ocean_posterior=> NULL() !< ensemble ocean posterior states
                                                                   !! or increments to prior in DA space
-  type(ocean_control_struct), pointer :: Ocean_increment=> NULL() !< A separate structure for
+  type(ensemble_control_struct), pointer :: Ocean_increment=> NULL() !< A separate structure for
                                                                   !! increment diagnostics
+  type(ocean_control_struct), pointer :: Ocean_background_ave=> NULL() !< ocean averaged prior states in model space
   integer :: nk !< number of vertical layers used for DA
   type(ocean_grid_type), pointer :: Grid => NULL() !< MOM6 grid type and decomposition for the DA
   type(ocean_grid_type), pointer :: G => NULL() !< MOM6 grid type and decomposition for the model
@@ -179,7 +180,7 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
   type(grid_type), pointer :: T_grid !< global tracer grid
   type(param_file_type) :: PF
   integer :: n
-  integer :: isd, ied, jsd, jed
+  ! integer :: isd, ied, jsd, jed
   integer :: is_oda, ie_oda, js_oda, je_oda
   integer :: isd_oda, ied_oda, jsd_oda, jed_oda
   integer, dimension(4) :: fld_sz
@@ -325,9 +326,6 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
   ! initialize storage for prior and posterior
   allocate(CS%Ocean_prior)
   call init_ocean_ensemble(CS%Ocean_prior,CS%Grid,CS%GV,CS%ensemble_size)
-  allocate(CS%Ocean_prior_inst)
-  call init_ocean_ensemble(CS%Ocean_prior_inst,CS%Grid,CS%GV,CS%ensemble_size)
-  CS%prior_ave_counter = 0.0
   allocate(CS%Ocean_posterior)
   call init_ocean_ensemble(CS%Ocean_posterior,CS%Grid,CS%GV,CS%ensemble_size)
   allocate(CS%Ocean_increment)
@@ -340,27 +338,10 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
   call initialize_regridding(CS%regridCS, CS%GV, CS%US, dG%max_depth,PF,'oda_driver',coord_mode,'','')
   call initialize_remapping(CS%remapCS,remap_scheme,answer_date = CS%answer_date)
   call set_regrid_params(CS%regridCS, min_thickness=0.)
-  isd = G%isd; ied = G%ied; jsd = G%jsd; jed = G%jed
-
-  ! breaking with the MOM6 convention and using global indices
-  !call get_domain_extent(G%Domain,is,ie,js,je,isd,ied,jsd,jed,&
-  !                       isg,ieg,jsg,jeg,idg_offset,jdg_offset,symmetric)
-  !isd=isd+idg_offset; ied=ied+idg_offset ! using global indexing within the DA module
-  !jsd=jsd+jdg_offset; jed=jed+jdg_offset ! TODO:  switch to local indexing? (mjh)
-
-  if (.not. associated(CS%h)) then
-    allocate(CS%h(isd:ied,jsd:jed,CS%GV%ke), source=CS%GV%Angstrom_H)
-    ! assign thicknesses
-    call ALE_initThicknessToCoord(CS%ALE_CS, G, CS%GV, CS%h)
-  endif
-
-  allocate(CS%T_tend(isd:ied,jsd:jed,CS%GV%ke), source=0.0)
-  allocate(CS%S_tend(isd:ied,jsd:jed,CS%GV%ke), source=0.0)
-!  call set_axes_info(CS%Grid, CS%GV, CS%US, PF, CS%diag_cs, set_vertical=.true.) ! missing in Feiyu's fork
+  
   allocate(CS%oda_grid)
   CS%oda_grid%x => CS%Grid%geolonT
   CS%oda_grid%y => CS%Grid%geolatT
-
 
   if (CS%use_basin_mask) then
     call get_param(PF, 'oda_driver', "BASIN_FILE", basin_file, &
@@ -381,6 +362,14 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
   CS%id_inc_s = register_diag_field('ocean_model', 'salt_increment', diag_CS%axesTL, &
        Time, 'ocean salinity increments', 'psu', conversion=US%S_to_ppt)
 
+  ! isd = G%isd; ied = G%ied; jsd = G%jsd; jed = G%jed
+
+  if (.not. associated(CS%h)) then
+    allocate(CS%h(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=CS%GV%Angstrom_H)
+    ! assign thicknesses
+    call ALE_initThicknessToCoord(CS%ALE_CS, G, CS%GV, CS%h)
+  endif
+
   !!  get global grid information from ocean model needed for ODA initialization
   T_grid => NULL()
   call set_up_global_tgrid(T_grid, CS, G)
@@ -389,8 +378,16 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
   deallocate(T_grid)
   CS%Time = Time
   CS%Prior_Time = Time
+  
   !! switch back to ensemble member pelist
   call set_PElist(CS%ensemble_pelist(CS%ensemble_id,:))
+
+  allocate(CS%Ocean_background_ave)
+  call init_ocean_background(CS%Ocean_background_ave,G,CS%GV)
+  CS%prior_ave_counter = 0.0
+
+  allocate(CS%T_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
+  allocate(CS%S_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
 
   if (CS%do_bias_adjustment) then
     call get_param(PF, mdl, "TEMP_SALT_ADJUSTMENT_FILE", bias_correction_file,  &
@@ -420,7 +417,7 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
 end subroutine init_oda
 
 !> Copy ensemble member tracers to ensemble vector.
-subroutine set_prior_tracer(Time, G, GV, h, tv, CS)
+subroutine set_prior_tracer(Time, G, GV, h, tv, u, v, CS)
   type(time_type), intent(in)    :: Time !< The current model time
   type(ocean_grid_type), pointer :: G !< domain and grid information for ocean model
   type(verticalGrid_type),               intent(in)    :: GV   !< The ocean's vertical grid structure
@@ -430,8 +427,10 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, CS)
   type(ODA_CS), pointer :: CS !< ocean DA control structure
   real, dimension(SZI_(G),SZJ_(G),CS%nk) :: T  ! Temperature on the analysis grid [C ~> degC]
   real, dimension(SZI_(G),SZJ_(G),CS%nk) :: S  ! Salinity on the analysis grid [S ~> ppt]
+  real, dimension(SZIB_(G),SZJ_(G),CS%nk) :: U      !< zonal velocity [L T-1 ~> m s-1]
+  real, dimension(SZI_(G),SZJB_(G),CS%nk) :: V      !< meridional velocity [L T-1 ~> m s-1]
   integer :: i, j, m
-  integer :: isc, iec, jsc, jec
+  ! integer :: isc, iec, jsc, jec
   real :: h_neglect, h_neglect_edge                 ! small thicknesses [H ~> m or kg m-2]
   integer :: isd, ied, jsd, jed
   character(len=160) :: mesg  ! The text of an error message
@@ -445,7 +444,7 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, CS)
   if (.not. associated(CS%GV)) call MOM_ERROR(FATAL,'ODA_CS ensemble vertical grid not associated')
 
   !! switch to global pelist
-  call set_PElist(CS%filter_pelist)
+  ! call set_PElist(CS%filter_pelist)
   !call MOM_mesg('Setting prior')
 
   if (CS%answer_date >= 20190101) then
@@ -457,10 +456,8 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, CS)
   endif
 
   ! computational domain for the analysis grid
-  isc=CS%Grid%isc;iec=CS%Grid%iec;jsc=CS%Grid%jsc;jec=CS%Grid%jec
-  ! array extents for the ensemble member
-  !call get_domain_extent(CS%domains(CS%ensemble_id),is,ie,js,je,isd,ied,jsd,jed,&
-  !     isg,ieg,jsg,jeg,idg_offset,jdg_offset,symmetric)
+  ! isc=CS%Grid%isc;iec=CS%Grid%iec;jsc=CS%Grid%jsc;jec=CS%Grid%jec
+
   ! remap temperature and salinity from the ensemble member to the analysis grid
   do j=G%jsc,G%jec ; do i=G%isc,G%iec
     call remapping_core_h(CS%remapCS, GV%ke, h(i,j,:), tv%T(i,j,:), &
@@ -470,38 +467,15 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, CS)
   enddo ; enddo
   ! cast ensemble members to the analysis domain
   if (CS%prior_ave_counter < 0.5) then
-    CS%Ocean_prior%T = 0.0
-    CS%Ocean_prior%S = 0.0
+    CS%Ocean_background_ave%T = 0.0
+    CS%Ocean_background_ave%S = 0.0
     call MOM_mesg("ODA Reset background accumulation")
-    ! do m=1,CS%ensemble_size
-      ! call redistribute_array(CS%domains(m)%mpp_domain, T,&
-      !      CS%mpp_domain, CS%Ocean_prior%T(:,:,:,m), complete=.true.)
-      ! call redistribute_array(CS%domains(m)%mpp_domain, S,&
-      !      CS%mpp_domain, CS%Ocean_prior%S(:,:,:,m), complete=.true.)
-    ! enddo
   endif
   
-  do m=1,CS%ensemble_size
-    call redistribute_array(CS%domains(m)%mpp_domain, T,&
-        CS%mpp_domain, CS%Ocean_prior_inst%T(:,:,:,m), complete=.true.)
-    call redistribute_array(CS%domains(m)%mpp_domain, S,&
-        CS%mpp_domain, CS%Ocean_prior_inst%S(:,:,:,m), complete=.true.)
-  enddo
-
-  CS%Ocean_prior%T = CS%Ocean_prior%T + CS%Ocean_prior_inst%T
-  CS%Ocean_prior%S = CS%Ocean_prior%S + CS%Ocean_prior_inst%S
-
-  do m=1,CS%ensemble_size
-    call pass_var(CS%Ocean_prior_inst%T(:,:,:,m),CS%Grid%domain)
-    call pass_var(CS%Ocean_prior_inst%S(:,:,:,m),CS%Grid%domain)
-    call pass_var(CS%Ocean_prior%T(:,:,:,m),CS%Grid%domain)
-    call pass_var(CS%Ocean_prior%S(:,:,:,m),CS%Grid%domain)
-  enddo
+  CS%Ocean_background_ave%T = CS%Ocean_background_ave%T + T
+  CS%Ocean_background_ave%S = CS%Ocean_background_ave%S + S
 
   CS%prior_ave_counter = CS%prior_ave_counter + 1.0
-
-  !! switch back to ensemble member pelist
-  call set_PElist(CS%ensemble_pelist(CS%ensemble_id,:))
 
   if (Time >= CS%Prior_Time) then
     ! increment the analysis time to the next step
@@ -514,6 +488,40 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, CS)
     call MOM_error(FATAL, " set_prior_time: " // &
          "prior averaging interval appears to be shorter than " // &
          "the model timestep")
+  endif
+
+  if ( Time >= CS%Time ) then
+
+    write(mesg,*) 'Count:', CS%prior_ave_counter,'Model Time: ', yr, mon, day, hr, min, sec
+    call MOM_mesg("ODA averaging prior: "//trim(mesg))
+
+    CS%Ocean_background_ave%T = CS%Ocean_background_ave%T / (CS%prior_ave_counter)
+    CS%Ocean_background_ave%S = CS%Ocean_background_ave%S / (CS%prior_ave_counter)
+
+    do m=1,CS%ensemble_size
+      call pass_var(CS%Ocean_background_ave%T,G%Domain)
+      call pass_var(CS%Ocean_background_ave%S,G%Domain)
+    enddo
+
+    !! switch to global pelist
+    call set_PElist(CS%filter_pelist)
+
+    do m=1,CS%ensemble_size
+      call redistribute_array(CS%domains(m)%mpp_domain, CS%Ocean_background_ave%T,&
+          CS%mpp_domain, CS%Ocean_prior%T(:,:,:,m), complete=.true.)
+      call redistribute_array(CS%domains(m)%mpp_domain, CS%Ocean_background_ave%S,&
+          CS%mpp_domain, CS%Ocean_prior%S(:,:,:,m), complete=.true.)
+    enddo
+
+    do m=1,CS%ensemble_size
+      call pass_var(CS%Ocean_prior%T(:,:,:,m),CS%Grid%domain)
+      call pass_var(CS%Ocean_prior%S(:,:,:,m),CS%Grid%domain)
+    enddo
+
+    CS%prior_ave_counter = 0.0
+
+    !! switch back to ensemble member pelist
+    call set_PElist(CS%ensemble_pelist(CS%ensemble_id,:))
   endif
 
   call cpu_clock_end(id_clock_get_prior)
@@ -529,14 +537,12 @@ subroutine get_posterior_tracer(Time, CS, increment)
   type(ODA_CS), pointer :: CS !< ocean DA control structure
   logical, optional, intent(in) :: increment !< True if returning increment only
 
-  type(ocean_control_struct), pointer :: Ocean_increment=>NULL()
   integer :: m
   logical :: get_inc
 
 
   ! return if not analysis time (retain pointers for h and tv)
   if (Time < CS%Time .or. CS%assim_method == NO_ASSIM) return
-
 
   !! switch to global pelist
   call set_PElist(CS%filter_pelist)
@@ -596,21 +602,8 @@ subroutine oda(Time, CS)
     call set_PElist(CS%filter_pelist)
     call get_profiles(Time, CS%Profiles, CS%CProfiles)
 #ifdef ENABLE_ECDA
-    write(mesg,*) 'Count:', CS%prior_ave_counter,'Model Time: ', yr, mon, day, hr, min, sec
-    call MOM_mesg("ODA averaging prior: "//trim(mesg))
-
-    CS%Ocean_prior%T = CS%Ocean_prior%T / (CS%prior_ave_counter)
-    CS%Ocean_prior%S = CS%Ocean_prior%S / (CS%prior_ave_counter)
-
-    do m=1,CS%ensemble_size
-      call pass_var(CS%Ocean_prior%T(:,:,:,m),CS%Grid%domain)
-      call pass_var(CS%Ocean_prior%S(:,:,:,m),CS%Grid%domain)
-    enddo
-
     call ensemble_filter(CS%Ocean_prior, CS%Ocean_posterior, CS%CProfiles, CS%kdroot, CS%mpp_domain, CS%oda_grid)
 #endif
-
-    CS%prior_ave_counter = 0.0
 
     !! switch back to ensemble member pelist
     call set_PElist(CS%ensemble_pelist(CS%ensemble_id,:))
@@ -675,6 +668,63 @@ subroutine get_bias_correction_tracer(Time, US, CS)
 
 end subroutine get_bias_correction_tracer
 
+!> Returns posterior adjustments or full state
+!!Note that only those PEs associated with an ensemble member receive data
+subroutine get_ML_increments(Time, CS, increment)
+  type(time_type), intent(in) :: Time !< the current model time
+  type(ODA_CS), pointer :: CS !< ocean DA control structure
+  logical, optional, intent(in) :: increment !< True if returning increment only
+
+  ! type(ensemble_control_struct), pointer :: Ocean_increment=>NULL()
+  ! integer :: m
+  ! logical :: get_inc
+
+
+  ! ! return if not analysis time (retain pointers for h and tv)
+  ! if (Time < CS%Time .or. CS%assim_method == NO_ASSIM) return
+
+  ! !! switch to global pelist
+  ! call set_PElist(CS%filter_pelist)
+  ! call MOM_mesg('Getting posterior')
+
+  ! !! Calculate and redistribute increments to CS%tv right after assimilation
+  ! !! Retain CS%tv to calculate increments for IAU updates CS%tv_inc otherwise
+  ! get_inc = .true.
+  ! if (present(increment)) get_inc = increment
+
+  ! if (get_inc) then
+  !   CS%Ocean_increment%T = CS%Ocean_posterior%T - CS%Ocean_prior%T
+  !   CS%Ocean_increment%S = CS%Ocean_posterior%S - CS%Ocean_prior%S
+  ! endif
+  ! ! It may be necessary to check whether the increment and ocean state have the
+  ! ! same dimensionally rescaled units.
+  ! do m=1,CS%ensemble_size
+  !   if (get_inc) then
+  !     call redistribute_array(CS%mpp_domain, CS%Ocean_increment%T(:,:,:,m),&
+  !          CS%domains(m)%mpp_domain, CS%T_tend, complete=.true.)
+  !     call redistribute_array(CS%mpp_domain, CS%Ocean_increment%S(:,:,:,m),&
+  !          CS%domains(m)%mpp_domain, CS%S_tend, complete=.true.)
+  !   else
+  !     call redistribute_array(CS%mpp_domain, CS%Ocean_posterior%T(:,:,:,m),&
+  !          CS%domains(m)%mpp_domain, CS%T_tend, complete=.true.)
+  !     call redistribute_array(CS%mpp_domain, CS%Ocean_posterior%S(:,:,:,m),&
+  !          CS%domains(m)%mpp_domain, CS%S_tend, complete=.true.)
+  !   endif
+  ! enddo
+
+
+  ! !! switch back to ensemble member pelist
+  ! call set_PElist(CS%ensemble_pelist(CS%ensemble_id,:))
+
+  ! call pass_var(CS%T_tend,CS%domains(CS%ensemble_id))
+  ! call pass_var(CS%S_tend,CS%domains(CS%ensemble_id))
+
+  ! !convert to a tendency (degC or PSU per second)
+  ! CS%T_tend = CS%T_tend / (CS%assim_interval)
+  ! CS%S_tend = CS%S_tend / (CS%assim_interval)
+
+end subroutine get_ML_increments
+
 !> Finalize DA module
 subroutine oda_end(CS)
   type(ODA_CS), intent(inout) :: CS !< the ocean DA control structure
@@ -683,30 +733,57 @@ end subroutine oda_end
 
 !> Initialize DA module
 subroutine init_ocean_ensemble(CS,Grid,GV,ens_size)
-  type(ocean_control_struct), pointer :: CS !< Pointer to ODA control structure
+  type(ensemble_control_struct), pointer :: CS !< Pointer to ODA control structure
   type(ocean_grid_type), pointer :: Grid !< Pointer to ocean analysis grid
   type(verticalGrid_type), pointer :: GV !< Pointer to DA vertical grid
   integer, intent(in) :: ens_size !< ensemble size
 
-  integer :: is, ie, js, je, nk
+  integer :: isd, ied, jsd, jed, nk, isdB, iedB, jsdB, jedB
 
   nk=GV%ke
-  is=Grid%isd;ie=Grid%ied
-  js=Grid%jsd;je=Grid%jed
+  isd  = Grid%isd ; ied  = Grid%ied  ; jsd  = Grid%jsd  ; jed  = Grid%jed
+  isdB = Grid%isdB; iedB = Grid%iedB ; jsdB = Grid%jsdB ; jedB = Grid%jedB
   CS%ensemble_size=ens_size
-  allocate(CS%T(is:ie,js:je,nk,ens_size),source=0.0)
-  allocate(CS%S(is:ie,js:je,nk,ens_size),source=0.0)
-  ! allocate(CS%SSH(is:ie,js:je,ens_size))
+  
+  allocate(CS%T(isd:ied,jsd:jed,nk,ens_size),source=0.0)
+  allocate(CS%S(isd:ied,jsd:jed,nk,ens_size),source=0.0)
+!  allocate(CS%SSH(is:ie,js:je,ens_size))
 !  allocate(CS%id_t(ens_size), source=-1)
 !  allocate(CS%id_s(ens_size), source=-1)
-!  allocate(CS%U(is:ie,js:je,nk,ens_size))
-!  allocate(CS%V(is:ie,js:je,nk,ens_size))
+  ! allocate(CS%U(isdB:iedB,jsd:jed,nk,ens_size),source=0.0)
+  ! allocate(CS%V(isd:ied,jsdB:jedB,nk,ens_size),source=0.0)
 !  allocate(CS%id_u(ens_size), source=-1)
 !  allocate(CS%id_v(ens_size), source=-1)
 !  allocate(CS%id_ssh(ens_size), source=-1)
 
   return
 end subroutine init_ocean_ensemble
+
+!> Initialize background variables
+subroutine init_ocean_background(CS,Grid,GV)
+  type(ocean_control_struct), pointer :: CS !< Pointer to ODA control structure
+  type(ocean_grid_type), pointer :: Grid !< Pointer to ocean analysis grid
+  type(verticalGrid_type), pointer :: GV !< Pointer to DA vertical grid
+
+  integer :: isd, ied, jsd, jed, nk, isdB, iedB, jsdB, jedB
+
+  nk=GV%ke
+  isd  = Grid%isd ; ied  = Grid%ied  ; jsd  = Grid%jsd  ; jed  = Grid%jed
+  isdB = Grid%isdB; iedB = Grid%iedB ; jsdB = Grid%jsdB ; jedB = Grid%jedB
+  
+  allocate(CS%T(isd:ied,jsd:jed,nk),source=0.0)
+  allocate(CS%S(isd:ied,jsd:jed,nk),source=0.0)
+!  allocate(CS%SSH(is:ie,js:je,ens_size))
+!  allocate(CS%id_t(ens_size), source=-1)
+!  allocate(CS%id_s(ens_size), source=-1)
+  ! allocate(CS%U(isdB:iedB,jsd:jed,nk,ens_size),source=0.0)
+  ! allocate(CS%V(isd:ied,jsdB:jedB,nk,ens_size),source=0.0)
+!  allocate(CS%id_u(ens_size), source=-1)
+!  allocate(CS%id_v(ens_size), source=-1)
+!  allocate(CS%id_ssh(ens_size), source=-1)
+
+  return
+end subroutine init_ocean_background
 
 !> Set the next analysis time
 subroutine set_analysis_time(Time,CS)
