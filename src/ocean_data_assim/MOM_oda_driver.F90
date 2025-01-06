@@ -417,18 +417,22 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
 end subroutine init_oda
 
 !> Copy ensemble member tracers to ensemble vector.
-subroutine set_prior_tracer(Time, G, GV, h, tv, u, v, CS)
+subroutine set_prior_tracer(Time, G, GV, h, tv, model_u, model_v, model_ssh, CS)
   type(time_type), intent(in)    :: Time !< The current model time
   type(ocean_grid_type), pointer :: G !< domain and grid information for ocean model
   type(verticalGrid_type),               intent(in)    :: GV   !< The ocean's vertical grid structure
   real, dimension(SZI_(G),SZJ_(G),SZK_(GV)), intent(in) :: h   !< Layer thicknesses [H ~> m or kg m-2]
   type(thermo_var_ptrs),                 intent(in) :: tv   !< A structure pointing to various thermodynamic variables
+  real, dimension(SZIB_(G),SZJ_(G),SZK_(GV)), intent(in)   :: model_u
+  real, dimension(SZI_(G),SZJB_(G),SZK_(GV)), intent(in)   :: model_v
+  real, dimension(SZI_(G),SZJ_(G)), intent(in) :: model_ssh
 
   type(ODA_CS), pointer :: CS !< ocean DA control structure
   real, dimension(SZI_(G),SZJ_(G),CS%nk) :: T  ! Temperature on the analysis grid [C ~> degC]
   real, dimension(SZI_(G),SZJ_(G),CS%nk) :: S  ! Salinity on the analysis grid [S ~> ppt]
   real, dimension(SZIB_(G),SZJ_(G),CS%nk) :: U      !< zonal velocity [L T-1 ~> m s-1]
   real, dimension(SZI_(G),SZJB_(G),CS%nk) :: V      !< meridional velocity [L T-1 ~> m s-1]
+
   integer :: i, j, m
   ! integer :: isc, iec, jsc, jec
   real :: h_neglect, h_neglect_edge                 ! small thicknesses [H ~> m or kg m-2]
@@ -465,15 +469,30 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, u, v, CS)
     call remapping_core_h(CS%remapCS, GV%ke, h(i,j,:), tv%S(i,j,:), &
          CS%nk, CS%h(i,j,:), S(i,j,:), h_neglect, h_neglect_edge)
   enddo ; enddo
+  ! remap U and V from the ensemble member to the analysis grid
+  do j=G%jsc,G%jec ; do i=G%iscB,G%iecB
+    call remapping_core_h(CS%remapCS, GV%ke, h(i,j,:), model_u(i,j,:), &
+         CS%nk, CS%h(i,j,:), U(i,j,:), h_neglect, h_neglect_edge)
+  enddo ; enddo
+  do j=G%jscB,G%jecB ; do i=G%isc,G%iec
+    call remapping_core_h(CS%remapCS, GV%ke, h(i,j,:), model_v(i,j,:), &
+         CS%nk, CS%h(i,j,:), V(i,j,:), h_neglect, h_neglect_edge)
+  enddo ; enddo
+
   ! cast ensemble members to the analysis domain
   if (CS%prior_ave_counter < 0.5) then
     CS%Ocean_background_ave%T = 0.0
     CS%Ocean_background_ave%S = 0.0
+    CS%Ocean_background_ave%U = 0.0
+    CS%Ocean_background_ave%V = 0.0
     call MOM_mesg("ODA Reset background accumulation")
   endif
   
   CS%Ocean_background_ave%T = CS%Ocean_background_ave%T + T
   CS%Ocean_background_ave%S = CS%Ocean_background_ave%S + S
+  CS%Ocean_background_ave%U = CS%Ocean_background_ave%U + U
+  CS%Ocean_background_ave%V = CS%Ocean_background_ave%V + V
+  CS%Ocean_background_ave%SSH = CS%Ocean_background_ave%SSH + model_ssh
 
   CS%prior_ave_counter = CS%prior_ave_counter + 1.0
 
@@ -497,10 +516,16 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, u, v, CS)
 
     CS%Ocean_background_ave%T = CS%Ocean_background_ave%T / (CS%prior_ave_counter)
     CS%Ocean_background_ave%S = CS%Ocean_background_ave%S / (CS%prior_ave_counter)
+    CS%Ocean_background_ave%U = CS%Ocean_background_ave%U / (CS%prior_ave_counter)
+    CS%Ocean_background_ave%V = CS%Ocean_background_ave%V / (CS%prior_ave_counter)
+    CS%Ocean_background_ave%SSH = CS%Ocean_background_ave%SSH / (CS%prior_ave_counter)
 
     do m=1,CS%ensemble_size
       call pass_var(CS%Ocean_background_ave%T,G%Domain)
       call pass_var(CS%Ocean_background_ave%S,G%Domain)
+      call pass_var(CS%Ocean_background_ave%U,G%Domain)
+      call pass_var(CS%Ocean_background_ave%V,G%Domain)
+      call pass_var(CS%Ocean_background_ave%SSH,G%Domain)
     enddo
 
     !! switch to global pelist
@@ -511,11 +536,14 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, u, v, CS)
           CS%mpp_domain, CS%Ocean_prior%T(:,:,:,m), complete=.true.)
       call redistribute_array(CS%domains(m)%mpp_domain, CS%Ocean_background_ave%S,&
           CS%mpp_domain, CS%Ocean_prior%S(:,:,:,m), complete=.true.)
+      call redistribute_array(CS%domains(m)%mpp_domain, CS%Ocean_background_ave%SSH,&
+          CS%mpp_domain, CS%Ocean_prior%SSH(:,:,m), complete=.true.)
     enddo
 
     do m=1,CS%ensemble_size
       call pass_var(CS%Ocean_prior%T(:,:,:,m),CS%Grid%domain)
       call pass_var(CS%Ocean_prior%S(:,:,:,m),CS%Grid%domain)
+      call pass_var(CS%Ocean_prior%SSH(:,:,m),CS%Grid%domain)
     enddo
 
     CS%prior_ave_counter = 0.0
@@ -747,11 +775,11 @@ subroutine init_ocean_ensemble(CS,Grid,GV,ens_size)
   
   allocate(CS%T(isd:ied,jsd:jed,nk,ens_size),source=0.0)
   allocate(CS%S(isd:ied,jsd:jed,nk,ens_size),source=0.0)
-!  allocate(CS%SSH(is:ie,js:je,ens_size))
+  allocate(CS%SSH(isd:ied,jsd:jed,ens_size),source=0.0)
 !  allocate(CS%id_t(ens_size), source=-1)
 !  allocate(CS%id_s(ens_size), source=-1)
-  ! allocate(CS%U(isdB:iedB,jsd:jed,nk,ens_size),source=0.0)
-  ! allocate(CS%V(isd:ied,jsdB:jedB,nk,ens_size),source=0.0)
+  allocate(CS%U(isdB:iedB,jsd:jed,nk,ens_size),source=0.0)
+  allocate(CS%V(isd:ied,jsdB:jedB,nk,ens_size),source=0.0)
 !  allocate(CS%id_u(ens_size), source=-1)
 !  allocate(CS%id_v(ens_size), source=-1)
 !  allocate(CS%id_ssh(ens_size), source=-1)
@@ -773,11 +801,11 @@ subroutine init_ocean_background(CS,Grid,GV)
   
   allocate(CS%T(isd:ied,jsd:jed,nk),source=0.0)
   allocate(CS%S(isd:ied,jsd:jed,nk),source=0.0)
-!  allocate(CS%SSH(is:ie,js:je,ens_size))
+  allocate(CS%SSH(isd:ied,jsd:jed),source=0.0)
 !  allocate(CS%id_t(ens_size), source=-1)
 !  allocate(CS%id_s(ens_size), source=-1)
-  ! allocate(CS%U(isdB:iedB,jsd:jed,nk,ens_size),source=0.0)
-  ! allocate(CS%V(isd:ied,jsdB:jedB,nk,ens_size),source=0.0)
+  allocate(CS%U(isdB:iedB,jsd:jed,nk),source=0.0)
+  allocate(CS%V(isd:ied,jsdB:jedB,nk),source=0.0)
 !  allocate(CS%id_u(ens_size), source=-1)
 !  allocate(CS%id_v(ens_size), source=-1)
 !  allocate(CS%id_ssh(ens_size), source=-1)
