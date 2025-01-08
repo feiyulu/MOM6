@@ -324,13 +324,14 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
   CS%Grid%ke = CS%GV%ke
   CS%nk = CS%GV%ke
   ! initialize storage for prior and posterior
-  allocate(CS%Ocean_prior)
-  call init_ocean_ensemble(CS%Ocean_prior,CS%Grid,CS%GV,CS%ensemble_size)
-  allocate(CS%Ocean_posterior)
-  call init_ocean_ensemble(CS%Ocean_posterior,CS%Grid,CS%GV,CS%ensemble_size)
-  allocate(CS%Ocean_increment)
-  call init_ocean_ensemble(CS%Ocean_increment,CS%Grid,CS%GV,CS%ensemble_size)
-
+  if (.NOT. CS%assim_method == NO_ASSIM) then
+    allocate(CS%Ocean_prior)
+    call init_ocean_ensemble(CS%Ocean_prior,CS%Grid,CS%GV,CS%ensemble_size)
+    allocate(CS%Ocean_posterior)
+    call init_ocean_ensemble(CS%Ocean_posterior,CS%Grid,CS%GV,CS%ensemble_size)
+    allocate(CS%Ocean_increment)
+    call init_ocean_ensemble(CS%Ocean_increment,CS%Grid,CS%GV,CS%ensemble_size)
+  endif
 
   call get_param(PF, 'oda_driver', "REGRIDDING_COORDINATE_MODE", coord_mode, &
        "Coordinate mode for vertical regridding.", &
@@ -485,6 +486,7 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, model_u, model_v, model_ssh, CS)
     CS%Ocean_background_ave%S = 0.0
     CS%Ocean_background_ave%U = 0.0
     CS%Ocean_background_ave%V = 0.0
+    CS%Ocean_background_ave%SSH = 0.0
     call MOM_mesg("ODA Reset background accumulation")
   endif
   
@@ -528,23 +530,25 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, model_u, model_v, model_ssh, CS)
       call pass_var(CS%Ocean_background_ave%SSH,G%Domain)
     enddo
 
-    !! switch to global pelist
-    call set_PElist(CS%filter_pelist)
+    if (.NOT. CS%assim_method == NO_ASSIM) then
+      !! switch to global pelist
+      call set_PElist(CS%filter_pelist)
 
-    do m=1,CS%ensemble_size
-      call redistribute_array(CS%domains(m)%mpp_domain, CS%Ocean_background_ave%T,&
-          CS%mpp_domain, CS%Ocean_prior%T(:,:,:,m), complete=.true.)
-      call redistribute_array(CS%domains(m)%mpp_domain, CS%Ocean_background_ave%S,&
-          CS%mpp_domain, CS%Ocean_prior%S(:,:,:,m), complete=.true.)
-      call redistribute_array(CS%domains(m)%mpp_domain, CS%Ocean_background_ave%SSH,&
-          CS%mpp_domain, CS%Ocean_prior%SSH(:,:,m), complete=.true.)
-    enddo
+      do m=1,CS%ensemble_size
+        call redistribute_array(CS%domains(m)%mpp_domain, CS%Ocean_background_ave%T,&
+            CS%mpp_domain, CS%Ocean_prior%T(:,:,:,m), complete=.true.)
+        call redistribute_array(CS%domains(m)%mpp_domain, CS%Ocean_background_ave%S,&
+            CS%mpp_domain, CS%Ocean_prior%S(:,:,:,m), complete=.true.)
+        call redistribute_array(CS%domains(m)%mpp_domain, CS%Ocean_background_ave%SSH,&
+            CS%mpp_domain, CS%Ocean_prior%SSH(:,:,m), complete=.true.)
+      enddo
 
-    do m=1,CS%ensemble_size
-      call pass_var(CS%Ocean_prior%T(:,:,:,m),CS%Grid%domain)
-      call pass_var(CS%Ocean_prior%S(:,:,:,m),CS%Grid%domain)
-      call pass_var(CS%Ocean_prior%SSH(:,:,m),CS%Grid%domain)
-    enddo
+      do m=1,CS%ensemble_size
+        call pass_var(CS%Ocean_prior%T(:,:,:,m),CS%Grid%domain)
+        call pass_var(CS%Ocean_prior%S(:,:,:,m),CS%Grid%domain)
+        call pass_var(CS%Ocean_prior%SSH(:,:,m),CS%Grid%domain)
+      enddo
+    endif
 
     CS%prior_ave_counter = 0.0
 
@@ -627,14 +631,16 @@ subroutine oda(Time, CS)
     call cpu_clock_begin(id_clock_ensemble_filter)
 
     !! switch to global pelist
-    call set_PElist(CS%filter_pelist)
-    call get_profiles(Time, CS%Profiles, CS%CProfiles)
-#ifdef ENABLE_ECDA
-    call ensemble_filter(CS%Ocean_prior, CS%Ocean_posterior, CS%CProfiles, CS%kdroot, CS%mpp_domain, CS%oda_grid)
-#endif
+    if (.NOT. CS%assim_method == NO_ASSIM) then
+      call set_PElist(CS%filter_pelist)
+      call get_profiles(Time, CS%Profiles, CS%CProfiles)
+      #ifdef ENABLE_ECDA
+        call ensemble_filter(CS%Ocean_prior, CS%Ocean_posterior, CS%CProfiles, CS%kdroot, CS%mpp_domain, CS%oda_grid)
+      #endif
+      !! switch back to ensemble member pelist
+      call set_PElist(CS%ensemble_pelist(CS%ensemble_id,:))
+    endif
 
-    !! switch back to ensemble member pelist
-    call set_PElist(CS%ensemble_pelist(CS%ensemble_id,:))
     call get_posterior_tracer(Time, CS, increment=.true.)
     if (CS%do_bias_adjustment) call get_bias_correction_tracer(Time, CS%US, CS)
   
@@ -778,8 +784,8 @@ subroutine init_ocean_ensemble(CS,Grid,GV,ens_size)
   allocate(CS%SSH(isd:ied,jsd:jed,ens_size),source=0.0)
 !  allocate(CS%id_t(ens_size), source=-1)
 !  allocate(CS%id_s(ens_size), source=-1)
-  allocate(CS%U(isdB:iedB,jsd:jed,nk,ens_size),source=0.0)
-  allocate(CS%V(isd:ied,jsdB:jedB,nk,ens_size),source=0.0)
+  ! allocate(CS%U(isdB:iedB,jsd:jed,nk,ens_size),source=0.0)
+  ! allocate(CS%V(isd:ied,jsdB:jedB,nk,ens_size),source=0.0)
 !  allocate(CS%id_u(ens_size), source=-1)
 !  allocate(CS%id_v(ens_size), source=-1)
 !  allocate(CS%id_ssh(ens_size), source=-1)
