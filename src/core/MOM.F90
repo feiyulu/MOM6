@@ -1030,7 +1030,7 @@ subroutine step_MOM(forces_in, fluxes_in, sfc_state, Time_start, time_int_in, CS
 
   if (CS%ensemble_ocean) then
     ! store ensemble vector in odaCS
-    call set_prior_tracer(CS%Time, G, GV, CS%h, CS%tv, CS%u, CS%v, ssh, CS%odaCS)
+    call set_prior_tracer(CS%Time, G, GV, CS%h, CS%tv, CS%u, CS%v, ssh, fluxes, forces, CS%odaCS)
     ! call DA interface
     call oda(CS%Time,CS%odaCS)
     ! update the time for the next analysis step if needed
