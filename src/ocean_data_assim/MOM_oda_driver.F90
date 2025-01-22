@@ -30,7 +30,7 @@ use ocean_da_types_mod, only : grid_type, ocean_profile_type
 use ocean_da_types_mod, only : ensemble_control_struct, ocean_control_struct
 use ocean_da_core_mod, only : ocean_da_core_init, get_profiles
 use MOM_oda_ml_mod, only: oda_ml_init, oda_ml_end, oda_ml_inference
-use MOM_oda_ml_mod, only: ocean_oda_ml_struct
+use MOM_oda_ml_mod, only: ocean_oda_ml_data, ocean_oda_ml_config
 !This preprocessing directive enables the SPEAR online ensemble data assimilation
 !configuration. Existing community based APIs for data assimilation are currently
 !called offline for forecast applications using information read from a MOM6 state file.
@@ -101,7 +101,8 @@ type, public :: ODA_CS ; private
   type(ensemble_control_struct), pointer :: Ocean_increment=> NULL() !< A separate structure for
                                                                   !! increment diagnostics
   type(ocean_control_struct), pointer :: Ocean_background_ave=> NULL() !< ocean averaged prior states in model space
-  type(ocean_oda_ml_struct), pointer :: ml_CS => NULL()
+  type(ocean_oda_ml_data), pointer :: ml_data => NULL()
+  type(ocean_oda_ml_config), pointer :: ml_config => NULL()
   integer :: nk !< number of vertical layers used for DA
   type(ocean_grid_type), pointer :: Grid => NULL() !< MOM6 grid type and decomposition for the DA
   type(ocean_grid_type), pointer :: model_G => NULL() !< MOM6 grid type and decomposition for the model
@@ -159,6 +160,8 @@ type, public :: ODA_CS ; private
   type(INC_CS) :: INC_CS !< A Structure containing integer file handles for bias adjustment
   integer :: id_inc_t !< A diagnostic handle for the temperature climatological adjustment
   integer :: id_inc_s !< A diagnostic handle for the salinity climatological adjustment
+  integer :: id_inc_ml_t !< A diagnostic handle for the temperature climatological adjustment
+  integer :: id_inc_ml_s !< A diagnostic handle for the salinity climatological adjustment
   integer :: answer_date    !< The vintage of the order of arithmetic and expressions in the
                             !! remapping invoked by the ODA driver.  Values below 20190101 recover
                             !! the answers from the end of 2018, while higher values use updated
@@ -435,9 +438,15 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
 
   if (CS%do_ml_bias_adjustment) then
 
-    allocate(CS%ml_CS)
-    call oda_ml_init(CS%ml_CS, CS%GV%ke)
+    allocate(CS%ml_data)
+    allocate(CS%ml_config)
+    call oda_ml_init(CS%ml_config, CS%ml_data, CS%GV)
     
+    CS%id_inc_ml_t = register_diag_field('ocean_model', 'temp_ml_increment', diag_CS%axesTL, &
+      Time, 'ocean potential temperature increments predicted by ML', 'degC', conversion=US%C_to_degC)
+    CS%id_inc_ml_s = register_diag_field('ocean_model', 'salt_ml_increment', diag_CS%axesTL, &
+      Time, 'ocean salinity increments predicted by ML', 'psu', conversion=US%S_to_ppt)
+
     allocate(CS%T_ml_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
     allocate(CS%S_ml_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
 
@@ -781,23 +790,37 @@ subroutine get_ML_bias_correction(Time, US, CS)
   !! Loop through all local gridpoints
   do j=CS%model_G%jsc,CS%model_G%jec ; do i=CS%model_G%isc,CS%model_G%iec
 
-    !! put local variables into ml_CS
-    CS%ml_CS%T = CS%Ocean_background_ave%T(i,j,:)
-    CS%ml_CS%S = CS%Ocean_background_ave%S(i,j,:)
-    CS%ml_CS%latent = CS%Ocean_background_ave%latent(i,j)
-    CS%ml_CS%sensible = CS%Ocean_background_ave%sensible(i,j)
-    CS%ml_CS%lw = CS%Ocean_background_ave%lw(i,j)
-    CS%ml_CS%sw = CS%Ocean_background_ave%sw(i,j)
+    !! put local variables into ml_data
+    CS%ml_data%T = CS%Ocean_background_ave%T(i,j,:)
+    CS%ml_data%S = CS%Ocean_background_ave%S(i,j,:)
+    CS%ml_data%U_left = CS%Ocean_background_ave%U(i-1,j,:)
+    CS%ml_data%U_right = CS%Ocean_background_ave%U(i,j,:)
+    CS%ml_data%V_north = CS%Ocean_background_ave%V(i,j,:)
+    CS%ml_data%V_south = CS%Ocean_background_ave%V(i,j-1,:)
+    CS%ml_data%latent = CS%Ocean_background_ave%latent(i,j)
+    CS%ml_data%sensible = CS%Ocean_background_ave%sensible(i,j)
+    CS%ml_data%lw = CS%Ocean_background_ave%lw(i,j)
+    CS%ml_data%sw = CS%Ocean_background_ave%sw(i,j)
+    CS%ml_data%taux_left = CS%Ocean_background_ave%taux(i-1,j)
+    CS%ml_data%taux_right = CS%Ocean_background_ave%taux(i,j)
+    CS%ml_data%tauy_north = CS%Ocean_background_ave%tauy(i,j)
+    CS%ml_data%tauy_south = CS%Ocean_background_ave%tauy(i,j-1)
     
-    !! Call inference subroutine with the concatenated vector
-    call oda_ml_inference(CS%ml_CS)
+    CS%ml_data%dyCu_left = CS%model_G%dyCu(i-1,j)
+    CS%ml_data%dyCu_right = CS%model_G%dyCu(i,j)
+    CS%ml_data%dxCv_north = CS%model_G%dxCv(i,j)
+    CS%ml_data%dxCv_south = CS%model_G%dxCv(i,j-1)
+    CS%ml_data%areacello = CS%model_G%areaT(i,j)
 
-    ! CS%T_ml_tend(i,j,:) = CS%ml_CS%T_inc
-    ! CS%S_ml_tend(i,j,:) = CS%ml_CS%S_inc
+    !! Call inference subroutine with the concatenated vector
+    call oda_ml_inference(CS%ml_config, CS%ml_data)
+
+    CS%T_ml_tend(i,j,:) = CS%ml_data%T_inc
+    CS%S_ml_tend(i,j,:) = CS%ml_data%S_inc
   enddo; enddo
 
-  CS%T_ml_tend = CS%T_bc_tend * CS%ml_bias_adjustment_multiplier
-  CS%S_ml_tend = CS%S_bc_tend * CS%ml_bias_adjustment_multiplier
+  CS%T_ml_tend = CS%T_ml_tend * CS%ml_bias_adjustment_multiplier
+  CS%S_ml_tend = CS%S_ml_tend * CS%ml_bias_adjustment_multiplier
 
   call pass_var(CS%T_ml_tend, CS%domains(CS%ensemble_id))
   call pass_var(CS%S_ml_tend, CS%domains(CS%ensemble_id))
@@ -936,10 +959,10 @@ subroutine apply_oda_tracer_increments(dt, Time_end, G, GV, tv, h, CS)
     T_tend = T_tend + CS%T_tend
     S_tend = S_tend + CS%S_tend
   endif
-  ! if (CS%do_bias_adjustment ) then
-  !   T_tend = T_tend + CS%T_bc_tend
-  !   S_tend = S_tend + CS%S_bc_tend
-  ! endif
+  if (CS%do_bias_adjustment ) then
+    T_tend = T_tend + CS%T_bc_tend
+    S_tend = S_tend + CS%S_bc_tend
+  endif
   if (CS%do_ml_bias_adjustment ) then
     T_tend = T_tend + CS%T_ml_tend
     S_tend = S_tend + CS%S_ml_tend

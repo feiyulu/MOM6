@@ -5,37 +5,61 @@ module MOM_oda_ml_mod
 
 ! MOM infrastructure
 use MOM_cpu_clock, only : cpu_clock_begin, cpu_clock_end, cpu_clock_id
-! MOM Modules
+use MOM_verticalGrid, only : verticalGrid_type
+use gsw_mod_toolbox, only : gsw_ct_from_pt, gsw_sigma0
+use netcdf, only : nf90_open, nf90_inq_varid, nf90_get_var, nf90_close, nf90_close
+use netcdf, only : nf90_nowrite, nf90_noerr
 
 implicit none ; private
 
 public :: oda_ml_init, oda_ml_end, oda_ml_inference
 
 ! Data structure to save the ML configuration, input, and output data
-type, public :: ocean_oda_ml_struct
-    !! Normalization parameters
+type, public :: ocean_oda_ml_config ; private
+    character(len=255)  :: filename
+    real(8), dimension(16,51)  :: l1_weight
+    real(8), dimension(16,16)  :: l2_weight, l3_weight
+    real(8), dimension(16) :: l1_bias, l2_bias, l3_bias
+    real(8), dimension(:), allocatable :: z_l
+    real(8), dimension(:), allocatable :: z_i
+    integer :: nk
+end type ocean_oda_ml_config
 
-    !! Weights
-
+type, public :: ocean_oda_ml_data
+    integer :: nk
+    real(8) :: dyCu_left, dyCu_right, dxCv_south, dxCv_north, areacello
     !! Input features
     real :: SSH !<sea surface height (m) across ensembles
-    real :: taux !<zonal wind stress
-    real :: tauy !<meridional wind stress
+    real :: taux_left !<zonal wind stress
+    real :: taux_right !<zonal wind stress
+    real :: tauy_north !<meridional wind stress
+    real :: tauy_south !<zonal wind stress
     real :: latent !<latent heat flux
     real :: sensible !<sensile heat flux
     real :: lw !<longwave radiation flux
     real :: sw !<shortwave radiation flux
-    real :: MLD !<shortwave radiation flux
     real, pointer, dimension(:) :: T=>NULL() !<layer potential temperature (degC) across ensembles
     real, pointer, dimension(:) :: S=>NULL() !<layer salinity (psu or g kg-1) across ensembles
-    ! real, pointer, dimension(:) :: U=>NULL() !<layer zonal velocity (m s-1) across ensembles
-    ! real, pointer, dimension(:) :: V=>NULL() !<layer meridional velocity (m s-1) across ensembles
-    real, pointer, dimension(:) :: Rho=>NULL() !<layer salinity (psu or g kg-1) across ensembles
+    real, pointer, dimension(:) :: U_left=>NULL() !<layer zonal velocity (m s-1) across ensembles
+    real, pointer, dimension(:) :: U_right=>NULL() !<layer zonal velocity (m s-1) across ensembles
+    real, pointer, dimension(:) :: V_north=>NULL() !<layer meridional velocity (m s-1) across ensembles
+    real, pointer, dimension(:) :: V_south=>NULL() !<layer meridional velocity (m s-1) across ensembles
 
     !! Output predictions
     real, pointer, dimension(:) :: T_inc=>NULL()
     real, pointer, dimension(:) :: S_inc=>NULL()
-end type ocean_oda_ml_struct
+
+end type ocean_oda_ml_data
+
+real(8) :: PRHO_change = 0.03
+real(8) :: reference_depth = 10
+real(8) :: value_for_control_depth = 1E6
+real(8) :: value_for_control_PRHO = 999
+real(8) :: value_for_control_oceanzvars = 1E5
+real(8) :: ReLU_zero = 0
+real(8), dimension(15) :: target_sigmas = (/0.1,0.3,0.5,0.7,0.9,1.1,1.3,1.5,1.7,1.9,2.1,2.3,2.5,2.7,2.9/)
+real(8), dimension(16) :: output_flux_sigmas = (/0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.2, 2.4, 2.6, 2.8, 3.0/)
+character(len=255)  :: danni_ANN_name = '/scratch/cimes/dd7201/pp_DA_increments/danni_data_20250120/argo_only_clean/networks/danni_ANN_weights_2006_2010.nc'
 
 integer :: id_clock_ml_remapping
 integer :: id_clock_ml_normalization
@@ -47,37 +71,578 @@ character(len=40)  :: mdl = "MOM_oda_ml" !< This module's name.
 
 contains
 
-subroutine oda_ml_inference(ml_CS)
-    type(ocean_oda_ml_struct), pointer, intent(in) :: ml_CS
-    
-end subroutine oda_ml_inference
+    subroutine oda_ml_inference(ml_config,ml_data)
+        type(ocean_oda_ml_config), pointer, intent(in) :: ml_config
+        type(ocean_oda_ml_data), pointer, intent(in) :: ml_data
+        
+        real(8) :: SA, PT, CT, PRHO ,tauamp
+        real(8), dimension(:), allocatable :: PRHO_profile
+        real(8) :: PRHO_mld, PRHO_10m, dummy_var 
+        real(8) :: mld_depth
+        integer :: zl_index_mld, zl_index10m, zl_index_3mld, right_index
+        real(8), dimension(:), allocatable :: zl_to_sigma, zi_to_sigma
+        real(8) :: thetao, so, uo_left, uo_right, vo_south, vo_north, div, thetao_top, thetao_bottom, so_top,so_bottom
+        real(8) :: so_zgrad,thetao_zgrad, PRHO_top, PRHO_bottom, PRHO_zgrad
+        real(8), dimension(15) :: thetao_zgrad_sigma, so_zgrad_sigma, PRHO_zgrad_sigma, div_sigma, output_DT_sigmas
+        real(8), dimension(:), allocatable :: thetao_zgrad_profile, so_zgrad_profile, div_profile, PRHO_zgrad_profile
+        real(8), dimension(51) :: ANN_input
+        real(8), dimension(:), allocatable :: output_DT_at_zl, output_flux_at_zi
+        real(8), dimension(:), allocatable :: z_l
+        real(8), dimension(16) :: l1_output, l2_output, l3_output
+        integer :: zz, i
 
-subroutine oda_ml_init(ml_CS,nk)
-    type(ocean_oda_ml_struct), pointer, intent(in) :: ml_CS
-    integer, intent(in) :: nk
+        allocate(z_l(ml_config%nk),source=0.0)
+        z_l = ml_config%z_l
+        do zz  = 1, ml_data%nk
+            SA = ml_data%S(zz)
+            PT = ml_data%T(zz)
+            CT = gsw_ct_from_pt(SA, PT)
+            PRHO = gsw_sigma0(SA, CT)
+            if (zz == 1) then
+                allocate(PRHO_profile(1))
+                PRHO_profile(1) = PRHO
+            else
+                call append_value(PRHO_profile, PRHO)
+            end if
+        end do
 
-    call init_oda_ml_features(ml_CS,nk)
-    
-end subroutine oda_ml_init
+        ! 3MLD 
+        ! find the first index below 10m
+        call find_right_index(z_l, reference_depth, value_for_control_depth, zl_index10m)
+        ! the 10m potential density
+        call interpolate(z_l(zl_index10m-1),z_l(zl_index10m),PRHO_profile(zl_index10m-1), PRHO_profile(zl_index10m),reference_depth,PRHO_10m)
+        ! the MLD potential density
+        PRHO_mld = PRHO_10m + PRHO_change
+        ! the first z_l index below MLD
+        call find_right_index(PRHO_profile, PRHO_mld,value_for_control_PRHO, zl_index_mld)
+        ! the MLD depth
+        call interpolate(PRHO_profile(zl_index_mld-1),PRHO_profile(zl_index_mld),z_l(zl_index_mld-1),z_l(zl_index_mld),PRHO_mld,mld_depth)
+        ! the MLD must be below 10m
+        if (mld_depth < 10) then
+            mld_depth = 10
+        end if
+        ! the first z_l index below 3MLD
+        call find_right_index(z_l, 3*mld_depth,value_for_control_depth, zl_index_3mld)
 
-subroutine oda_ml_end(ml_CS)
-    type(ocean_oda_ml_struct), pointer, intent(in) :: ml_CS
-    
-end subroutine oda_ml_end
+        dummy_var = (ml_data%T(zl_index_3mld+1) + ml_data%S(zl_index_3mld+1) + ml_data%U_left(zl_index_3mld+1) + &
+                ml_data%U_right(zl_index_3mld+1) + ml_data%V_north(zl_index_3mld+1) + ml_data%V_south(zl_index_3mld+1))/6 
+        ! if not nan, then get the vertical profiles
+        if (abs(dummy_var) < value_for_control_oceanzvars) then
+            zi_to_sigma = ml_config%z_i(2:zl_index_3mld + 1)/mld_depth
+            do zz = 1, zl_index_3mld
+                thetao_top = ml_data%T(zz)
+                so_top = ml_data%S(zz)
+                CT = gsw_ct_from_pt(so_top,thetao_top)
+                PRHO_top = gsw_sigma0(so_top,CT)
+                
+                thetao_bottom = ml_data%T(zz+1)
+                so_bottom = ml_data%S(zz+1)
+                CT = gsw_ct_from_pt(so_bottom,thetao_bottom)
+                PRHO_bottom = gsw_sigma0(so_bottom,CT)
 
-subroutine init_oda_ml_features(ml_CS,nk)
-    type(ocean_oda_ml_struct), pointer, intent(in) :: ml_CS
-    integer, intent(in) :: nk
 
-    allocate(ml_CS%T(nk),source=0.0)
-    allocate(ml_CS%S(nk),source=0.0)
-    ! allocate(ml_CS%U(nk),source=0.0)
-    ! allocate(ml_CS%V(nk),source=0.0)
-    allocate(ml_CS%Rho(nk),source=0.0)
+                thetao_zgrad = (thetao_top - thetao_bottom)/(z_l(zz+1) - z_l(zz))
+                so_zgrad = (so_top - so_bottom)/(z_l(zz+1) - z_l(zz))
+                PRHO_zgrad = (PRHO_top - PRHO_bottom)/(z_l(zz+1) - z_l(zz))
+                ! append them to 1D array
+                if (zz == 1) then
+                    allocate(thetao_zgrad_profile(1))
+                    thetao_zgrad_profile(1) = thetao_zgrad
+                    allocate(so_zgrad_profile(1))
+                    so_zgrad_profile(1) = so_zgrad
+                    allocate(PRHO_zgrad_profile(1))
+                    PRHO_zgrad_profile(1) = PRHO_zgrad
+                else
+                    call append_value(thetao_zgrad_profile, thetao_zgrad)
+                    call append_value(so_zgrad_profile, so_zgrad)
+                    call append_value(PRHO_zgrad_profile, PRHO_zgrad)
+                end if
+            end do
+            zl_to_sigma = z_l(1:zl_index_3mld)/mld_depth
+            do zz = 1, zl_index_3mld
+                call compute_current_divergence(ml_data%U_left(zz)*ml_data%dyCu_left, ml_data%U_right(zz)*ml_data%dyCu_right, &
+                        ml_data%V_south(zz)*ml_data%dxCv_south, ml_data%V_north(zz)*ml_data%dxCv_north, &
+                        ml_data%areacello, div)
+                if (zz == 1) then
+                    allocate(div_profile(1))
+                    div_profile(1) = div
+                else
+                    call append_value(div_profile, div)
+                end if
+            end do 
+        
+        end if
+        
+        ! interpolate values to target_sigmas
+        do i = 1, 15
+            call find_right_index(zi_to_sigma, target_sigmas(i),value_for_control_depth, right_index)
+            if (right_index == 1) then
+            thetao_zgrad_sigma(i) = thetao_zgrad_profile(1)
+            so_zgrad_sigma(i) = so_zgrad_profile(1)
+            PRHO_zgrad_sigma(i) = PRHO_zgrad_profile(1)
+            else
+            call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),thetao_zgrad_profile(right_index-1),thetao_zgrad_profile(right_index),target_sigmas(i),thetao_zgrad_sigma(i))
+            call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),so_zgrad_profile(right_index-1),so_zgrad_profile(right_index),target_sigmas(i),so_zgrad_sigma(i))
+            call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),PRHO_zgrad_profile(right_index-1),PRHO_zgrad_profile(right_index),target_sigmas(i),PRHO_zgrad_sigma(i))
+            end if
 
-    allocate(ml_CS%T_inc(nk),source=0.0)
-    allocate(ml_CS%S_inc(nk),source=0.0)
+            call find_right_index(zl_to_sigma, target_sigmas(i),value_for_control_depth, right_index)
+            if (right_index == 1) then
+            div_sigma(i) = div_profile(1)
+            else
+            call interpolate(zl_to_sigma(right_index-1),zl_to_sigma(right_index),div_profile(right_index-1),div_profile(right_index),target_sigmas(i),div_sigma(i))
+            end if
+        end do
 
-end subroutine init_oda_ml_features
+        tauamp = sqrt(((ml_data%taux_left+ml_data%taux_right)/2)**2+((ml_data%tauy_south+ml_data%tauy_north)/2)**2)
+
+        ! subroutine(input,DA tendency)        
+        ANN_input(1:15) = thetao_zgrad_sigma*100
+        ANN_input(16:30) = PRHO_zgrad_sigma*100
+        ANN_input(31:45) = div_sigma*1E7
+        ANN_input(46) = mld_depth*0.1
+        ANN_input(47) = tauamp*100
+        ANN_input(48) = ml_data%latent*0.1
+        ANN_input(49) = ml_data%sensible*0.1
+        ANN_input(50) = ml_data%lw*0.1
+        ANN_input(51) = ml_data%sw*0.1
+
+        l1_output = max(ReLU_zero, matmul(ml_config%l1_weight, ANN_input) + ml_config%l1_bias)
+        l2_output = max(ReLU_zero, matmul(ml_config%l2_weight, l1_output) + ml_config%l2_bias)
+        l3_output = matmul(ml_config%l3_weight, l2_output) + ml_config%l3_bias
+        !print *, l3_output
+        ! l3_output is the predicted flux
+        output_DT_sigmas =  (l3_output(1:15)-l3_output(2:16))/(0.2*mld_depth)
+        !print *, zi_to_sigma
+        !print *, zl_to_sigma
+        allocate(output_flux_at_zi(zl_index_3mld+1))
+        output_flux_at_zi(1) = l3_output(1)
+        do zz = 1, zl_index_3mld
+            call find_right_index(output_flux_sigmas, zi_to_sigma(zz),value_for_control_depth, right_index)
+            if (right_index == 0) then
+            output_flux_at_zi(zz+1) = 0.0
+            else
+            call interpolate(output_flux_sigmas(right_index-1),output_flux_sigmas(right_index),l3_output(right_index-1),&
+                    l3_output(right_index),zi_to_sigma(zz),output_flux_at_zi(zz+1))
+            
+            end if       
+        end do
+        
+        allocate(output_DT_at_zl(zl_index_3mld))
+        do zz = 1, zl_index_3mld
+            call find_right_index(target_sigmas, zl_to_sigma(zz),value_for_control_depth, right_index)
+            if (right_index == 0) then
+            output_DT_at_zl(zz) = 0.0
+            else if (right_index == 1) then
+            output_DT_at_zl(zz) = output_DT_sigmas(1)
+            else
+            call interpolate(target_sigmas(right_index-1),target_sigmas(right_index),output_DT_sigmas(right_index-1),&
+                    output_DT_sigmas(right_index),zl_to_sigma(zz),output_DT_at_zl(zz))
+            end if
+        end do
+
+        ml_data%T_inc(1:zl_index_3mld)=output_DT_at_zl
+
+    end subroutine oda_ml_inference
+
+    subroutine oda_ml_init(ml_config,ml_data,GV)
+        type(ocean_oda_ml_config), pointer, intent(in) :: ml_config
+        type(ocean_oda_ml_data), pointer, intent(in) :: ml_data
+        type(verticalGrid_type), pointer, intent(in) :: GV   !< The ocean's vertical grid structure
+
+        ! load the NN weights and biases
+        call read_ANN_file(ml_config)
+
+        allocate(ml_config%z_l(GV%ke), source=0.0)
+        ml_config%z_l = GV%sLayer
+
+        allocate(ml_config%z_i(GV%ke+1), source=0.0)
+        ml_config%z_i = GV%sInterface
+
+        ml_config%nk = GV%ke
+        call init_oda_ml_features(ml_data,GV%ke)    
+
+    end subroutine oda_ml_init
+
+    subroutine oda_ml_end(ml_config,ml_data)
+        type(ocean_oda_ml_config), pointer, intent(in) :: ml_config
+        type(ocean_oda_ml_data), pointer, intent(in) :: ml_data
+
+    end subroutine oda_ml_end
+
+    subroutine init_oda_ml_features(ml_data,nk)
+        type(ocean_oda_ml_data), pointer, intent(in) :: ml_data
+        integer, intent(in) :: nk
+
+        ml_data%nk = nk
+        allocate(ml_data%T(nk),source=0.0)
+        allocate(ml_data%S(nk),source=0.0)
+        allocate(ml_data%U_left(nk),source=0.0)
+        allocate(ml_data%U_right(nk),source=0.0)
+        allocate(ml_data%V_north(nk),source=0.0)
+        allocate(ml_data%V_south(nk),source=0.0)
+
+        allocate(ml_data%T_inc(nk),source=0.0)
+        allocate(ml_data%S_inc(nk),source=0.0)
+
+    end subroutine init_oda_ml_features
+
+    Subroutine read_ANN_file(ml_config)
+        implicit none
+        type(ocean_oda_ml_config), pointer, intent(in) :: ml_config
+
+        ! character(len=*), intent(in) :: filename
+        ! real(8), dimension(16,51), intent(out) :: l1_weight
+        ! real(8), dimension(16,16), intent(out) :: l2_weight, l3_weight
+        ! real(8), dimension(16), intent(out) :: l1_bias, l2_bias, l3_bias
+
+        real(8), dimension(51,16)  :: l1_weight_temp
+        real(8), dimension(16,16) :: l2_weight_temp, l3_weight_temp
+        integer :: ncid, varid, retval
+        character(len = 255) :: varname
+
+        ml_config%filename = danni_ANN_name
+
+        ! Open the NetCDF file
+        retval = nf90_open(ml_config%filename, nf90_nowrite, ncid)
+        if (retval /= nf90_noerr) then
+        print *, 'Error: Unable to open file'
+        stop
+        endif
+
+        ! Get the variable ID
+        varname = 'l1_weight'
+        retval = nf90_inq_varid(ncid, varname, varid)
+        if (retval == nf90_noerr) then
+        ! Read the dimension values
+        retval = nf90_get_var(ncid, varid, l1_weight_temp)
+        ml_config%l1_weight = transpose(l1_weight_temp)
+        if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to get l1 weight values'
+            stop
+        endif
+        else
+        print *, 'Error: l1 weight variable not found'
+        endif
+
+        varname = 'l2_weight'
+        retval = nf90_inq_varid(ncid, varname, varid)
+        if (retval == nf90_noerr) then
+        ! Read the dimension values
+        retval = nf90_get_var(ncid, varid, l2_weight_temp)
+        ml_config%l2_weight = transpose(l2_weight_temp)
+        if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to get l2 weight values'
+            stop
+        endif
+        else
+        print *, 'Error: l2 weight variable not found'
+        endif
+
+        varname = 'l3_weight'
+        retval = nf90_inq_varid(ncid, varname, varid)
+        if (retval == nf90_noerr) then
+        ! Read the dimension values
+        retval = nf90_get_var(ncid, varid, l3_weight_temp)
+        ml_config%l3_weight = transpose(l3_weight_temp)
+        if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to get l3 weight values'
+            stop
+        endif
+        else
+        print *, 'Error: l3 weight variable not found'
+        endif
+
+        varname = 'l1_bias'
+        retval = nf90_inq_varid(ncid, varname, varid)
+        if (retval == nf90_noerr) then
+        ! Read the dimension values
+        retval = nf90_get_var(ncid, varid, ml_config%l1_bias)
+        if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to get l1 bias values'
+            stop
+        endif
+        else
+        print *, 'Error: l1 bias variable not found'
+        endif
+
+        varname = 'l2_bias'
+        retval = nf90_inq_varid(ncid, varname, varid)
+        if (retval == nf90_noerr) then
+        ! Read the dimension values
+        retval = nf90_get_var(ncid, varid, ml_config%l2_bias)
+        if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to get l2 bias values'
+            stop
+        endif
+        else
+        print *, 'Error: l2 bias variable not found'
+        endif
+
+        varname = 'l3_bias'
+        retval = nf90_inq_varid(ncid, varname, varid)
+        if (retval == nf90_noerr) then
+        ! Read the dimension values
+        retval = nf90_get_var(ncid, varid, ml_config%l3_bias)
+        if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to get l3 bias values'
+            stop
+        endif
+        else
+        print *, 'Error: l3 bias variable not found'
+        endif
+
+        ! Close the NetCDF file
+        retval = nf90_close(ncid)
+        if (retval /= nf90_noerr) then
+        print *, 'Error: Unable to close file'
+        stop
+        endif
+    end subroutine read_ANN_file
+
+    ! 1D linear interpolation; it is guaranteed that x1 <= thisx < x2
+    subroutine interpolate(x1,x2,y1,y2,thisx,thisy)
+        implicit none
+        real(8), intent(in) :: x1, x2, y1, y2, thisx
+        real(8), intent(out) :: thisy
+        thisy = (thisx-x1)/(x2-x1)*(y2-y1) + y1
+    end subroutine interpolate
+
+    ! to get an 1D array with variable size, appending values
+    subroutine append_value(old_array, new_value)
+        implicit none
+        real(8), dimension(:), allocatable, intent(inout) :: old_array
+        real(8), intent(in) :: new_value
+        integer :: old_size, new_size
+        real(8), dimension(:), allocatable :: temp_array
+        old_size = size(old_array)
+        new_size = old_size + 1
+
+        ! Temporarily allocate a new array to hold the combined values
+        allocate(temp_array(new_size))
+
+        ! Copy old values to the new array
+        temp_array(1:old_size) = old_array
+
+        ! Append the new value to the new array
+        temp_array(new_size) = new_value
+
+        ! Deallocate the old array and reallocate it with the new size
+        deallocate(old_array)
+        allocate(old_array(new_size))
+
+        ! Copy the combined values back to the original array
+        old_array = temp_array
+
+        ! Deallocate the temporary array
+        deallocate(temp_array)
+    end subroutine append_value
+
+    ! Subroutine to find the index. 1D array (index) is greater than the given value
+    Subroutine find_right_index(array1d_for_indexing, value_for_indexing,value_for_control, right_index)
+        implicit none
+        real(8), intent(in) :: array1d_for_indexing(:)
+        integer :: array1d_i
+        integer, intent(out) :: right_index
+        real(8), intent(in) :: value_for_indexing, value_for_control
+        right_index = 0 ! if there's so such right index, it will be 0 
+        do array1d_i = 1, size(array1d_for_indexing)
+            if (abs(array1d_for_indexing(array1d_i)) > value_for_control) then
+            return
+            else if (array1d_for_indexing(array1d_i) > value_for_indexing) then
+            right_index = array1d_i
+            return
+            end if
+        end do
+    end subroutine find_right_index
+
+    ! Subroutine to compute divergence
+    Subroutine compute_current_divergence(uy_left, uy_right, vx_south, vy_north, area, div)
+        implicit none
+        real(8), intent(in) :: uy_left, uy_right, vx_south, vy_north, area
+        real(8), intent(out) :: div
+
+        div = (uy_right - uy_left + vy_north - vx_south) / area
+
+    end subroutine compute_current_divergence
+
+    ! Subroutine to read a grid NetCDF file
+    Subroutine read_grid_file(filename, varname, xdimindex, ydimindex, varvalue)
+        implicit none
+
+        integer :: ncid, varid, retval
+        integer, intent(in) :: xdimindex, ydimindex
+        character(len=*), intent(in) :: filename, varname
+        real(8), intent(out) :: varvalue
+
+        ! Open the NetCDF file
+        retval = nf90_open(filename, nf90_nowrite, ncid)
+        if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to open file'
+            stop
+        endif
+
+        ! Get the variable ID
+        retval = nf90_inq_varid(ncid, varname, varid)
+        if (retval == nf90_noerr) then
+            ! Read the values
+            retval = nf90_get_var(ncid, varid, varvalue, start = (/xdimindex,ydimindex/))
+            if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to get the grid info'
+            stop
+            endif
+        else
+            print *, 'Error: this grid info not found'
+        endif
+
+        ! Close the NetCDF file
+        retval = nf90_close(ncid)
+        if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to close file'
+            stop
+        endif
+
+    end subroutine read_grid_file
+
+
+    ! Subroutine to read a single (time, lev, lat, lon) NetCDF file
+    subroutine read_netcdf_file_zlzi(filename, dimname1, dimname2,dimvalues1,dimvalues2)
+        implicit none
+
+        ! Declare variables
+        integer :: ncid, varid1, varid2, retval
+        real(8), dimension(75), intent(out) :: dimvalues1
+        real(8), dimension(76), intent(out) :: dimvalues2
+        character(len=*), intent(in) :: filename, dimname1, dimname2
+
+
+        ! Open the NetCDF file
+        retval = nf90_open(filename, nf90_nowrite, ncid)
+        if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to open file'
+            stop
+        endif
+
+        ! Get the variable ID for varname
+        retval = nf90_inq_varid(ncid, dimname1, varid1)
+        if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to get variable ID'
+            stop
+        endif
+        retval = nf90_inq_varid(ncid, dimname2, varid2)
+        if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to get variable ID'
+            stop
+        endif
+
+
+        ! Read the data
+        retval = nf90_get_var(ncid, varid1, dimvalues1)
+
+        if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to read data'
+            stop
+        endif
+
+        retval = nf90_get_var(ncid, varid2, dimvalues2)
+
+        if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to read data'
+            stop
+        endif
+
+        ! Close the NetCDF file
+        retval = nf90_close(ncid)
+        if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to close file'
+            stop
+        endif
+
+    end subroutine read_netcdf_file_zlzi
+
+    ! Subroutine to read a single (time, lev, lat, lon) NetCDF file
+    subroutine read_netcdf_file_4d(filename, varname, xdimindex, ydimindex, zdimindex, timedimindex, varvalue)
+        implicit none
+
+        ! Declare variables
+        integer :: ncid, varid, retval
+        integer, intent(in) :: xdimindex, ydimindex, timedimindex, zdimindex
+        real(8), intent(out) :: varvalue
+        character(len=*), intent(in) :: filename, varname
+
+
+        ! Open the NetCDF file
+        retval = nf90_open(filename, nf90_nowrite, ncid)
+        if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to open file'
+            stop
+        endif
+
+        ! Get the variable ID for varname
+        retval = nf90_inq_varid(ncid, varname, varid)
+        if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to get variable ID'
+            stop
+        endif
+
+
+        ! Read the data
+        retval = nf90_get_var(ncid, varid, varvalue, start = (/xdimindex, ydimindex,zdimindex, timedimindex/))
+
+        if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to read data'
+            stop
+        endif
+
+        ! Close the NetCDF file
+        retval = nf90_close(ncid)
+        if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to close file'
+            stop
+        endif
+
+    end subroutine read_netcdf_file_4d
+
+    ! Subroutine to read a single (time, lat, lon) NetCDF file
+    subroutine read_netcdf_file_3d(filename, varname,xdimindex, ydimindex, timedimindex, varvalue)
+        implicit none
+
+        ! Declare variables
+        integer :: ncid, varid, retval
+        integer, intent(in) :: xdimindex, ydimindex, timedimindex
+        real(8) :: varvalue
+        character(len=*), intent(in) :: filename, varname
+
+
+        ! Open the NetCDF file
+        retval = nf90_open(filename, nf90_nowrite, ncid)
+        if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to open file'
+            stop
+        endif
+
+        ! Get the variable ID for varname
+        retval = nf90_inq_varid(ncid, varname, varid)
+        if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to get variable ID'
+            stop
+        endif
+
+
+        ! Read the data
+        retval = nf90_get_var(ncid, varid, varvalue, start = (/xdimindex, ydimindex, timedimindex/))
+        if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to read data'
+            stop
+        endif
+
+        ! Close the NetCDF file
+        retval = nf90_close(ncid)
+        if (retval /= nf90_noerr) then
+            print *, 'Error: Unable to close file'
+            stop
+        endif
+
+    end subroutine read_netcdf_file_3d
 
 end module MOM_oda_ml_mod
