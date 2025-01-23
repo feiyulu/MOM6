@@ -785,8 +785,8 @@ subroutine get_ML_bias_correction(Time, US, CS)
 
   call cpu_clock_begin(id_clock_ml_bias_correction)
 
-  !! Co-locate all variables (taux, tauy, U, V to tracer grid)
-  
+  call MOM_mesg('Doing ML inference')
+
   !! Loop through all local gridpoints
   do j=CS%model_G%jsc,CS%model_G%jec ; do i=CS%model_G%isc,CS%model_G%iec
 
@@ -1001,7 +1001,6 @@ subroutine apply_oda_tracer_increments(dt, Time_end, G, GV, tv, h, CS)
 
   call diag_update_remap_grids(CS%diag_CS)
   call cpu_clock_end(id_clock_apply_increments)
-
 
 end subroutine apply_oda_tracer_increments
 

@@ -59,7 +59,7 @@ real(8) :: value_for_control_oceanzvars = 1E5
 real(8) :: ReLU_zero = 0
 real(8), dimension(15) :: target_sigmas = (/0.1,0.3,0.5,0.7,0.9,1.1,1.3,1.5,1.7,1.9,2.1,2.3,2.5,2.7,2.9/)
 real(8), dimension(16) :: output_flux_sigmas = (/0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.2, 2.4, 2.6, 2.8, 3.0/)
-character(len=255)  :: danni_ANN_name = '/scratch/cimes/dd7201/pp_DA_increments/danni_data_20250120/argo_only_clean/networks/danni_ANN_weights_2006_2010.nc'
+character(len=255)  :: danni_ANN_name = '/gpfs/f5/gfdl_sd/world-shared/Feiyu.Lu/ECDA_data/ML/danni_ANN_weights_2006_2010.nc'
 
 integer :: id_clock_ml_remapping
 integer :: id_clock_ml_normalization
@@ -177,20 +177,23 @@ contains
         do i = 1, 15
             call find_right_index(zi_to_sigma, target_sigmas(i),value_for_control_depth, right_index)
             if (right_index == 1) then
-            thetao_zgrad_sigma(i) = thetao_zgrad_profile(1)
-            so_zgrad_sigma(i) = so_zgrad_profile(1)
-            PRHO_zgrad_sigma(i) = PRHO_zgrad_profile(1)
+                thetao_zgrad_sigma(i) = thetao_zgrad_profile(1)
+                so_zgrad_sigma(i) = so_zgrad_profile(1)
+                PRHO_zgrad_sigma(i) = PRHO_zgrad_profile(1)
             else
-            call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),thetao_zgrad_profile(right_index-1),thetao_zgrad_profile(right_index),target_sigmas(i),thetao_zgrad_sigma(i))
-            call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),so_zgrad_profile(right_index-1),so_zgrad_profile(right_index),target_sigmas(i),so_zgrad_sigma(i))
-            call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),PRHO_zgrad_profile(right_index-1),PRHO_zgrad_profile(right_index),target_sigmas(i),PRHO_zgrad_sigma(i))
+                call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),thetao_zgrad_profile(right_index-1), &
+                        thetao_zgrad_profile(right_index),target_sigmas(i),thetao_zgrad_sigma(i))
+                call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),so_zgrad_profile(right_index-1), &
+                        so_zgrad_profile(right_index),target_sigmas(i),so_zgrad_sigma(i))
+                call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),PRHO_zgrad_profile(right_index-1), &
+                        PRHO_zgrad_profile(right_index),target_sigmas(i),PRHO_zgrad_sigma(i))
             end if
 
             call find_right_index(zl_to_sigma, target_sigmas(i),value_for_control_depth, right_index)
             if (right_index == 1) then
-            div_sigma(i) = div_profile(1)
+                div_sigma(i) = div_profile(1)
             else
-            call interpolate(zl_to_sigma(right_index-1),zl_to_sigma(right_index),div_profile(right_index-1),div_profile(right_index),target_sigmas(i),div_sigma(i))
+                call interpolate(zl_to_sigma(right_index-1),zl_to_sigma(right_index),div_profile(right_index-1),div_profile(right_index),target_sigmas(i),div_sigma(i))
             end if
         end do
 
