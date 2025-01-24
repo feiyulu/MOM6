@@ -160,8 +160,8 @@ type, public :: ODA_CS ; private
   type(INC_CS) :: INC_CS !< A Structure containing integer file handles for bias adjustment
   integer :: id_inc_t !< A diagnostic handle for the temperature climatological adjustment
   integer :: id_inc_s !< A diagnostic handle for the salinity climatological adjustment
-  integer :: id_inc_ml_t !< A diagnostic handle for the temperature climatological adjustment
-  integer :: id_inc_ml_s !< A diagnostic handle for the salinity climatological adjustment
+  ! integer :: id_inc_ml_t !< A diagnostic handle for the temperature climatological adjustment
+  ! integer :: id_inc_ml_s !< A diagnostic handle for the salinity climatological adjustment
   integer :: answer_date    !< The vintage of the order of arithmetic and expressions in the
                             !! remapping invoked by the ODA driver.  Values below 20190101 recover
                             !! the answers from the end of 2018, while higher values use updated
@@ -442,10 +442,10 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
     allocate(CS%ml_config)
     call oda_ml_init(CS%ml_config, CS%ml_data, CS%GV)
     
-    CS%id_inc_ml_t = register_diag_field('ocean_model', 'temp_ml_increment', diag_CS%axesTL, &
-      Time, 'ocean potential temperature increments predicted by ML', 'degC', conversion=US%C_to_degC)
-    CS%id_inc_ml_s = register_diag_field('ocean_model', 'salt_ml_increment', diag_CS%axesTL, &
-      Time, 'ocean salinity increments predicted by ML', 'psu', conversion=US%S_to_ppt)
+    ! CS%id_inc_ml_t = register_diag_field('ocean_model', 'temp_ml_increment', diag_CS%axesTL, &
+    !   Time, 'ocean potential temperature increments predicted by ML', 'degC', conversion=US%C_to_degC)
+    ! CS%id_inc_ml_s = register_diag_field('ocean_model', 'salt_ml_increment', diag_CS%axesTL, &
+    !   Time, 'ocean salinity increments predicted by ML', 'psu', conversion=US%S_to_ppt)
 
     allocate(CS%T_ml_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
     allocate(CS%S_ml_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
@@ -790,33 +790,38 @@ subroutine get_ML_bias_correction(Time, US, CS)
   !! Loop through all local gridpoints
   do j=CS%model_G%jsc,CS%model_G%jec ; do i=CS%model_G%isc,CS%model_G%iec
 
-    !! put local variables into ml_data
-    CS%ml_data%T = CS%Ocean_background_ave%T(i,j,:)
-    CS%ml_data%S = CS%Ocean_background_ave%S(i,j,:)
-    CS%ml_data%U_left = CS%Ocean_background_ave%U(i-1,j,:)
-    CS%ml_data%U_right = CS%Ocean_background_ave%U(i,j,:)
-    CS%ml_data%V_north = CS%Ocean_background_ave%V(i,j,:)
-    CS%ml_data%V_south = CS%Ocean_background_ave%V(i,j-1,:)
-    CS%ml_data%latent = CS%Ocean_background_ave%latent(i,j)
-    CS%ml_data%sensible = CS%Ocean_background_ave%sensible(i,j)
-    CS%ml_data%lw = CS%Ocean_background_ave%lw(i,j)
-    CS%ml_data%sw = CS%Ocean_background_ave%sw(i,j)
-    CS%ml_data%taux_left = CS%Ocean_background_ave%taux(i-1,j)
-    CS%ml_data%taux_right = CS%Ocean_background_ave%taux(i,j)
-    CS%ml_data%tauy_north = CS%Ocean_background_ave%tauy(i,j)
-    CS%ml_data%tauy_south = CS%Ocean_background_ave%tauy(i,j-1)
-    
-    CS%ml_data%dyCu_left = CS%model_G%dyCu(i-1,j)
-    CS%ml_data%dyCu_right = CS%model_G%dyCu(i,j)
-    CS%ml_data%dxCv_north = CS%model_G%dxCv(i,j)
-    CS%ml_data%dxCv_south = CS%model_G%dxCv(i,j-1)
-    CS%ml_data%areacello = CS%model_G%areaT(i,j)
+    if (CS%model_G%geolatT(i,j) > 60.0 .or. CS%model_G%geolatT(i,j) < -60.0) then
+      CS%T_ml_tend(i,j,:) = 0.0
+      CS%S_ml_tend(i,j,:) = 0.0
+    else
+      !! put local variables into ml_data
+      CS%ml_data%T = CS%Ocean_background_ave%T(i,j,:)
+      CS%ml_data%S = CS%Ocean_background_ave%S(i,j,:)
+      CS%ml_data%U_left = CS%Ocean_background_ave%U(i-1,j,:)
+      CS%ml_data%U_right = CS%Ocean_background_ave%U(i,j,:)
+      CS%ml_data%V_north = CS%Ocean_background_ave%V(i,j,:)
+      CS%ml_data%V_south = CS%Ocean_background_ave%V(i,j-1,:)
+      CS%ml_data%latent = CS%Ocean_background_ave%latent(i,j)
+      CS%ml_data%sensible = CS%Ocean_background_ave%sensible(i,j)
+      CS%ml_data%lw = CS%Ocean_background_ave%lw(i,j)
+      CS%ml_data%sw = CS%Ocean_background_ave%sw(i,j)
+      CS%ml_data%taux_left = CS%Ocean_background_ave%taux(i-1,j)
+      CS%ml_data%taux_right = CS%Ocean_background_ave%taux(i,j)
+      CS%ml_data%tauy_north = CS%Ocean_background_ave%tauy(i,j)
+      CS%ml_data%tauy_south = CS%Ocean_background_ave%tauy(i,j-1)
+      
+      CS%ml_data%dyCu_left = CS%model_G%dyCu(i-1,j)
+      CS%ml_data%dyCu_right = CS%model_G%dyCu(i,j)
+      CS%ml_data%dxCv_north = CS%model_G%dxCv(i,j)
+      CS%ml_data%dxCv_south = CS%model_G%dxCv(i,j-1)
+      CS%ml_data%areacello = CS%model_G%areaT(i,j)
 
-    !! Call inference subroutine with the concatenated vector
-    call oda_ml_inference(CS%ml_config, CS%ml_data)
+      !! Call inference subroutine with the concatenated vector
+      call oda_ml_inference(CS%ml_config, CS%ml_data)
 
-    CS%T_ml_tend(i,j,:) = CS%ml_data%T_inc
-    CS%S_ml_tend(i,j,:) = CS%ml_data%S_inc
+      CS%T_ml_tend(i,j,:) = CS%ml_data%T_inc
+      CS%S_ml_tend(i,j,:) = CS%ml_data%S_inc    
+    endif
   enddo; enddo
 
   CS%T_ml_tend = CS%T_ml_tend * CS%ml_bias_adjustment_multiplier

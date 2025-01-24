@@ -3383,6 +3383,7 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
 
   if (CS%ensemble_ocean) then
     call init_oda(Time, G, GV, US, CS%diag, CS%odaCS)
+    call set_analysis_time(CS%Time,CS%odaCS)
   endif
 
   ! initialize stochastic physics
