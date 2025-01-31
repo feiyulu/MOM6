@@ -136,11 +136,13 @@ type, public :: ODA_CS ; private
   logical :: do_T_bias_adjustment !< If true, use spatio-temporally varying climatological tendency
                                 !! adjustment for Temperature and Salinity
   logical :: do_S_bias_adjustment !< If true, use spatio-temporally varying climatological tendency
-  real, dimension(2) :: bias_adjustment_multiplier !< A scaling for the bias adjustment
+  real :: T_bias_adjustment_multiplier !< A scaling for the bias adjustment
+  real :: S_bias_adjustment_multiplier !< A scaling for the bias adjustment
   logical :: do_T_ml_bias_adjustment !< If true, use machine learning-trained tendency
                                 !! adjustment for Temperature and Salinity
   logical :: do_S_ml_bias_adjustment !< If true, use machine learning-trained tendency
-  real, dimension(2) :: ml_bias_adjustment_multiplier !< A scaling for the bias adjustment
+  real :: T_ml_bias_adjustment_multiplier !< A scaling for the bias adjustment
+  real :: S_ml_bias_adjustment_multiplier !< A scaling for the bias adjustment
   integer :: assim_method !< Method: NO_ASSIM,EAKF_ASSIM or OI_ASSIM
   integer :: ensemble_size !< Size of the ensemble
   integer :: ensemble_id = 0 !< id of the current ensemble member
@@ -262,8 +264,13 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
        "If true, add a spatio-temporally varying climatological adjustment "//&
        "to salinity.", &
        default=.false.)
-  if (CS%do_T_bias_adjustment .or. CS%do_S_bias_adjustment) then
-    call get_param(PF, mdl, "TRACER_ADJUSTMENT_FACTOR", CS%bias_adjustment_multiplier, &
+  if (CS%do_T_bias_adjustment) then
+    call get_param(PF, mdl, "TEMP_ADJUSTMENT_FACTOR", CS%T_bias_adjustment_multiplier, &
+       "A multiplicative scaling factor for the climatological tracer tendency adjustment ", &
+       units="nondim", default=1.0)
+  endif
+  if (CS%do_S_bias_adjustment) then
+    call get_param(PF, mdl, "SALT_ADJUSTMENT_FACTOR", CS%S_bias_adjustment_multiplier, &
        "A multiplicative scaling factor for the climatological tracer tendency adjustment ", &
        units="nondim", default=1.0)
   endif
@@ -275,8 +282,13 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
        "If true, add a machine learning-trained adjustment "//&
        "to salinity.", &
        default=.false.)
-  if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
-    call get_param(PF, mdl, "ML_TRACER_ADJUSTMENT_FACTOR", CS%ml_bias_adjustment_multiplier, &
+  if (CS%do_T_ml_bias_adjustment) then
+    call get_param(PF, mdl, "ML_TEMP_ADJUSTMENT_FACTOR", CS%T_ml_bias_adjustment_multiplier, &
+       "A multiplicative scaling factor for the machine learning tracer tendency adjustment ", &
+       units="nondim", default=1.0)
+  endif
+  if (CS%do_S_ml_bias_adjustment) then
+    call get_param(PF, mdl, "ML_SALT_ADJUSTMENT_FACTOR", CS%S_ml_bias_adjustment_multiplier, &
        "A multiplicative scaling factor for the machine learning tracer tendency adjustment ", &
        units="nondim", default=1.0)
   endif
@@ -774,8 +786,8 @@ subroutine get_bias_correction_tracer(Time, US, CS)
     enddo
   enddo
 
-  CS%T_bc_tend = T_bias * CS%bias_adjustment_multiplier(1)
-  CS%S_bc_tend = S_bias * CS%bias_adjustment_multiplier(2)
+  CS%T_bc_tend = T_bias * CS%T_bias_adjustment_multiplier
+  CS%S_bc_tend = S_bias * CS%S_bias_adjustment_multiplier
 
   call pass_var(CS%T_bc_tend, CS%domains(CS%ensemble_id))
   call pass_var(CS%S_bc_tend, CS%domains(CS%ensemble_id))
@@ -829,13 +841,10 @@ subroutine get_ML_bias_correction(Time, US, CS)
       !! Call inference subroutine with the concatenated vector
       call oda_ml_inference(CS%ml_config, CS%ml_data)
 
-      CS%T_ml_tend(i,j,:) = CS%ml_data%T_inc
-      CS%S_ml_tend(i,j,:) = CS%ml_data%S_inc    
+      CS%T_ml_tend(i,j,:) = CS%ml_data%T_inc * CS%T_ml_bias_adjustment_multiplier
+      CS%S_ml_tend(i,j,:) = CS%ml_data%S_inc * CS%S_ml_bias_adjustment_multiplier
     endif
   enddo; enddo
-
-  CS%T_ml_tend = CS%T_ml_tend * CS%ml_bias_adjustment_multiplier(1)
-  CS%S_ml_tend = CS%S_ml_tend * CS%ml_bias_adjustment_multiplier(2)
 
   call pass_var(CS%T_ml_tend, CS%domains(CS%ensemble_id))
   call pass_var(CS%S_ml_tend, CS%domains(CS%ensemble_id))
