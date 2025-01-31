@@ -212,6 +212,7 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
   character(len=80) :: remap_scheme
   character(len=80) :: bias_correction_file, inc_file
   integer :: default_answer_date  ! The default setting for the various ANSWER_DATE flags.
+  character(len=160) :: mesg
 
   if (associated(CS)) call MOM_error(FATAL, 'Calling oda_init with associated control structure')
   allocate(CS)
@@ -267,13 +268,15 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
   if (CS%do_T_bias_adjustment) then
     call get_param(PF, mdl, "TEMP_ADJUSTMENT_FACTOR", CS%T_bias_adjustment_multiplier, &
        "A multiplicative scaling factor for the climatological tracer tendency adjustment ", &
-       units="nondim", default=1.0)
+       units="nondim", default=0.0)
   endif
   if (CS%do_S_bias_adjustment) then
     call get_param(PF, mdl, "SALT_ADJUSTMENT_FACTOR", CS%S_bias_adjustment_multiplier, &
        "A multiplicative scaling factor for the climatological tracer tendency adjustment ", &
-       units="nondim", default=1.0)
+       units="nondim", default=0.0)
   endif
+  write(mesg,*) 'OTA adjustment multiplier', CS%T_bias_adjustment_multiplier, CS%S_bias_adjustment_multiplier
+  call MOM_mesg("ODA init: "//trim(mesg))
   call get_param(PF, mdl, "APPLY_ML_TEMP_TENDENCY_ADJUSTMENT", CS%do_T_ml_bias_adjustment, &
        "If true, add a machine learning-trained adjustment "//&
        "to temperature.", &
@@ -285,13 +288,15 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
   if (CS%do_T_ml_bias_adjustment) then
     call get_param(PF, mdl, "ML_TEMP_ADJUSTMENT_FACTOR", CS%T_ml_bias_adjustment_multiplier, &
        "A multiplicative scaling factor for the machine learning tracer tendency adjustment ", &
-       units="nondim", default=1.0)
+       units="nondim", default=0.0)
   endif
   if (CS%do_S_ml_bias_adjustment) then
     call get_param(PF, mdl, "ML_SALT_ADJUSTMENT_FACTOR", CS%S_ml_bias_adjustment_multiplier, &
        "A multiplicative scaling factor for the machine learning tracer tendency adjustment ", &
-       units="nondim", default=1.0)
+       units="nondim", default=0.0)
   endif
+  write(mesg,*) 'ML adjustment multiplier', CS%T_ml_bias_adjustment_multiplier, CS%S_ml_bias_adjustment_multiplier
+  call MOM_mesg("ODA init: "//trim(mesg))
   call get_param(PF, mdl, "USE_BASIN_MASK", CS%use_basin_mask, &
        "If true, add a basin mask to delineate weakly connected "//&
        "ocean basins for the purpose of data assimilation.", &
@@ -661,6 +666,9 @@ subroutine oda(Time, CS)
   integer :: m
   character(len=160) :: mesg  ! The text of an error message
   integer :: yr, mon, day, hr, min, sec
+  integer :: isc, iec, jsc, jec
+
+  isc=CS%model_G%isc; iec=CS%model_G%iec; jsc=CS%model_G%jsc; jec=CS%model_G%jec
 
   if ( Time >= CS%Time ) then
     call cpu_clock_begin(id_clock_ensemble_filter)
@@ -700,13 +708,21 @@ subroutine oda(Time, CS)
     if (CS%do_T_bias_adjustment .or. CS%do_S_bias_adjustment) call get_bias_correction_tracer(Time, CS%US, CS)
 
     if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
+
       call get_ML_bias_correction(Time, CS%US, CS)
+
       if (CS%do_T_ml_bias_adjustment) then
-        CS%Ocean_background_ave%T = CS%Ocean_background_ave%T + CS%T_ml_tend * CS%assim_interval
+        CS%Ocean_background_ave%T(isc:iec,jsc:jec,:) = CS%Ocean_background_ave%T(isc:iec,jsc:jec,:) + &
+          CS%T_ml_tend(isc:iec,jsc:jec,:) * CS%assim_interval
+        call pass_var(CS%Ocean_background_ave%T, CS%model_G%Domain)
       endif
+
       if (CS%do_S_ml_bias_adjustment) then
-        CS%Ocean_background_ave%S = CS%Ocean_background_ave%S + CS%S_ml_tend * CS%assim_interval
+        CS%Ocean_background_ave%S(isc:iec,jsc:jec,:) = CS%Ocean_background_ave%S(isc:iec,jsc:jec,:) + &
+          CS%S_ml_tend(isc:iec,jsc:jec,:) * CS%assim_interval
+        call pass_var(CS%Ocean_background_ave%S, CS%model_G%Domain)
       endif
+
     endif
 
     !! switch to global pelist
