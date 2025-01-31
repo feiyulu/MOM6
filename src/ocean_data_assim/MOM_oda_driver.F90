@@ -133,12 +133,14 @@ type, public :: ODA_CS ; private
   logical :: tripolar_N !< grid is folded at its north edge
   logical :: symmetric !< Values at C-grid locations are symmetric
   logical :: use_basin_mask !< If true, use a basin file to delineate weakly coupled ocean basins
-  logical :: do_bias_adjustment !< If true, use spatio-temporally varying climatological tendency
+  logical :: do_T_bias_adjustment !< If true, use spatio-temporally varying climatological tendency
                                 !! adjustment for Temperature and Salinity
-  real :: bias_adjustment_multiplier !< A scaling for the bias adjustment
-  logical :: do_ml_bias_adjustment !< If true, use machine learning-trained tendency
+  logical :: do_S_bias_adjustment !< If true, use spatio-temporally varying climatological tendency
+  real, dimension(2) :: bias_adjustment_multiplier !< A scaling for the bias adjustment
+  logical :: do_T_ml_bias_adjustment !< If true, use machine learning-trained tendency
                                 !! adjustment for Temperature and Salinity
-  real :: ml_bias_adjustment_multiplier !< A scaling for the bias adjustment
+  logical :: do_S_ml_bias_adjustment !< If true, use machine learning-trained tendency
+  real, dimension(2) :: ml_bias_adjustment_multiplier !< A scaling for the bias adjustment
   integer :: assim_method !< Method: NO_ASSIM,EAKF_ASSIM or OI_ASSIM
   integer :: ensemble_size !< Size of the ensemble
   integer :: ensemble_id = 0 !< id of the current ensemble member
@@ -252,20 +254,28 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
        "Use tripolar connectivity at the northern edge of the "//&
        "domain.  With TRIPOLAR_N, NIGLOBAL must be even.", &
        default=.false.)
-  call get_param(PF, mdl, "APPLY_TRACER_TENDENCY_ADJUSTMENT", CS%do_bias_adjustment, &
+  call get_param(PF, mdl, "APPLY_TEMP_TENDENCY_ADJUSTMENT", CS%do_T_bias_adjustment, &
        "If true, add a spatio-temporally varying climatological adjustment "//&
-       "to temperature and salinity.", &
+       "to temperature.", &
        default=.false.)
-  if (CS%do_bias_adjustment) then
+  call get_param(PF, mdl, "APPLY_SALT_TENDENCY_ADJUSTMENT", CS%do_S_bias_adjustment, &
+       "If true, add a spatio-temporally varying climatological adjustment "//&
+       "to salinity.", &
+       default=.false.)
+  if (CS%do_T_bias_adjustment .or. CS%do_S_bias_adjustment) then
     call get_param(PF, mdl, "TRACER_ADJUSTMENT_FACTOR", CS%bias_adjustment_multiplier, &
        "A multiplicative scaling factor for the climatological tracer tendency adjustment ", &
        units="nondim", default=1.0)
   endif
-  call get_param(PF, mdl, "APPLY_ML_TRACER_TENDENCY_ADJUSTMENT", CS%do_ml_bias_adjustment, &
+  call get_param(PF, mdl, "APPLY_ML_TEMP_TENDENCY_ADJUSTMENT", CS%do_T_ml_bias_adjustment, &
        "If true, add a machine learning-trained adjustment "//&
-       "to temperature and salinity.", &
+       "to temperature.", &
        default=.false.)
-  if (CS%do_ml_bias_adjustment) then
+  call get_param(PF, mdl, "APPLY_ML_SALT_TENDENCY_ADJUSTMENT", CS%do_S_ml_bias_adjustment, &
+       "If true, add a machine learning-trained adjustment "//&
+       "to salinity.", &
+       default=.false.)
+  if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
     call get_param(PF, mdl, "ML_TRACER_ADJUSTMENT_FACTOR", CS%ml_bias_adjustment_multiplier, &
        "A multiplicative scaling factor for the machine learning tracer tendency adjustment ", &
        units="nondim", default=1.0)
@@ -417,7 +427,7 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
   allocate(CS%T_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
   allocate(CS%S_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
 
-  if (CS%do_bias_adjustment) then
+  if (CS%do_T_bias_adjustment .or. CS%do_S_bias_adjustment) then
     call get_param(PF, mdl, "TEMP_SALT_ADJUSTMENT_FILE", bias_correction_file,  &
                 "The name of the file containing temperature and salinity "//&
                 "tendency adjustments", default='temp_salt_adjustment.nc')
@@ -436,7 +446,7 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
 
   endif
 
-  if (CS%do_ml_bias_adjustment) then
+  if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
 
     allocate(CS%ml_data)
     allocate(CS%ml_config)
@@ -570,63 +580,6 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, model_u, model_v, model_ssh, flu
          "the model timestep")
   endif
 
-  if ( Time >= CS%Time ) then
-
-    write(mesg,*) 'Count:', CS%prior_ave_counter,'Model Time: ', yr, mon, day, hr, min, sec
-    call MOM_mesg("ODA averaging prior: "//trim(mesg))
-
-    CS%Ocean_background_ave%T = CS%Ocean_background_ave%T / (CS%prior_ave_counter)
-    CS%Ocean_background_ave%S = CS%Ocean_background_ave%S / (CS%prior_ave_counter)
-    CS%Ocean_background_ave%U = CS%Ocean_background_ave%U / (CS%prior_ave_counter)
-    CS%Ocean_background_ave%V = CS%Ocean_background_ave%V / (CS%prior_ave_counter)
-    CS%Ocean_background_ave%SSH = CS%Ocean_background_ave%SSH / (CS%prior_ave_counter)
-    CS%Ocean_background_ave%taux = CS%Ocean_background_ave%taux / (CS%prior_ave_counter)
-    CS%Ocean_background_ave%tauy = CS%Ocean_background_ave%tauy / (CS%prior_ave_counter)
-    CS%Ocean_background_ave%latent = CS%Ocean_background_ave%latent / (CS%prior_ave_counter)
-    CS%Ocean_background_ave%sensible = CS%Ocean_background_ave%sensible / (CS%prior_ave_counter)
-    CS%Ocean_background_ave%lw = CS%Ocean_background_ave%lw / (CS%prior_ave_counter)
-    CS%Ocean_background_ave%sw = CS%Ocean_background_ave%sw / (CS%prior_ave_counter)
-
-    do m=1,CS%ensemble_size
-      call pass_var(CS%Ocean_background_ave%T,G%Domain)
-      call pass_var(CS%Ocean_background_ave%S,G%Domain)
-      call pass_var(CS%Ocean_background_ave%U,G%Domain)
-      call pass_var(CS%Ocean_background_ave%V,G%Domain)
-      call pass_var(CS%Ocean_background_ave%SSH,G%Domain)
-      call pass_var(CS%Ocean_background_ave%taux,G%Domain)
-      call pass_var(CS%Ocean_background_ave%tauy,G%Domain)
-      call pass_var(CS%Ocean_background_ave%latent,G%Domain)
-      call pass_var(CS%Ocean_background_ave%sensible,G%Domain)
-      call pass_var(CS%Ocean_background_ave%lw,G%Domain)
-      call pass_var(CS%Ocean_background_ave%sw,G%Domain)
-    enddo
-
-    if (.NOT. CS%assim_method == NO_ASSIM) then
-      !! switch to global pelist
-      call set_PElist(CS%filter_pelist)
-
-      do m=1,CS%ensemble_size
-        call redistribute_array(CS%domains(m)%mpp_domain, CS%Ocean_background_ave%T,&
-            CS%mpp_domain, CS%Ocean_prior%T(:,:,:,m), complete=.true.)
-        call redistribute_array(CS%domains(m)%mpp_domain, CS%Ocean_background_ave%S,&
-            CS%mpp_domain, CS%Ocean_prior%S(:,:,:,m), complete=.true.)
-        call redistribute_array(CS%domains(m)%mpp_domain, CS%Ocean_background_ave%SSH,&
-            CS%mpp_domain, CS%Ocean_prior%SSH(:,:,m), complete=.true.)
-      enddo
-
-      do m=1,CS%ensemble_size
-        call pass_var(CS%Ocean_prior%T(:,:,:,m),CS%Grid%domain)
-        call pass_var(CS%Ocean_prior%S(:,:,:,m),CS%Grid%domain)
-        call pass_var(CS%Ocean_prior%SSH(:,:,m),CS%Grid%domain)
-      enddo
-    endif
-
-    CS%prior_ave_counter = 0.0
-
-    !! switch back to ensemble member pelist
-    call set_PElist(CS%ensemble_pelist(CS%ensemble_id,:))
-  endif
-
   call cpu_clock_end(id_clock_get_prior)
   
   return
@@ -676,7 +629,6 @@ subroutine get_posterior_tracer(Time, CS, increment)
     endif
   enddo
 
-
   !! switch back to ensemble member pelist
   call set_PElist(CS%ensemble_pelist(CS%ensemble_id,:))
 
@@ -701,10 +653,70 @@ subroutine oda(Time, CS)
   if ( Time >= CS%Time ) then
     call cpu_clock_begin(id_clock_ensemble_filter)
 
+    call get_date(Time, yr, mon, day, hr, min, sec)
+    write(mesg,*) 'Count:', CS%prior_ave_counter,'Model Time: ', yr, mon, day, hr, min, sec
+    call MOM_mesg("ODA averaging prior: "//trim(mesg))
+
+    CS%Ocean_background_ave%T = CS%Ocean_background_ave%T / (CS%prior_ave_counter)
+    CS%Ocean_background_ave%S = CS%Ocean_background_ave%S / (CS%prior_ave_counter)
+    CS%Ocean_background_ave%U = CS%Ocean_background_ave%U / (CS%prior_ave_counter)
+    CS%Ocean_background_ave%V = CS%Ocean_background_ave%V / (CS%prior_ave_counter)
+    CS%Ocean_background_ave%SSH = CS%Ocean_background_ave%SSH / (CS%prior_ave_counter)
+    CS%Ocean_background_ave%taux = CS%Ocean_background_ave%taux / (CS%prior_ave_counter)
+    CS%Ocean_background_ave%tauy = CS%Ocean_background_ave%tauy / (CS%prior_ave_counter)
+    CS%Ocean_background_ave%latent = CS%Ocean_background_ave%latent / (CS%prior_ave_counter)
+    CS%Ocean_background_ave%sensible = CS%Ocean_background_ave%sensible / (CS%prior_ave_counter)
+    CS%Ocean_background_ave%lw = CS%Ocean_background_ave%lw / (CS%prior_ave_counter)
+    CS%Ocean_background_ave%sw = CS%Ocean_background_ave%sw / (CS%prior_ave_counter)
+
+    do m=1,CS%ensemble_size
+      call pass_var(CS%Ocean_background_ave%T,CS%model_G%Domain)
+      call pass_var(CS%Ocean_background_ave%S,CS%model_G%Domain)
+      call pass_var(CS%Ocean_background_ave%U,CS%model_G%Domain)
+      call pass_var(CS%Ocean_background_ave%V,CS%model_G%Domain)
+      call pass_var(CS%Ocean_background_ave%SSH,CS%model_G%Domain)
+      call pass_var(CS%Ocean_background_ave%taux,CS%model_G%Domain)
+      call pass_var(CS%Ocean_background_ave%tauy,CS%model_G%Domain)
+      call pass_var(CS%Ocean_background_ave%latent,CS%model_G%Domain)
+      call pass_var(CS%Ocean_background_ave%sensible,CS%model_G%Domain)
+      call pass_var(CS%Ocean_background_ave%lw,CS%model_G%Domain)
+      call pass_var(CS%Ocean_background_ave%sw,CS%model_G%Domain)
+    enddo
+    
+    CS%prior_ave_counter = 0.0
+
+    if (CS%do_T_bias_adjustment .or. CS%do_S_bias_adjustment) call get_bias_correction_tracer(Time, CS%US, CS)
+
+    if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
+      call get_ML_bias_correction(Time, CS%US, CS)
+      if (CS%do_T_ml_bias_adjustment) then
+        CS%Ocean_background_ave%T = CS%Ocean_background_ave%T + CS%T_ml_tend * CS%assim_interval
+      endif
+      if (CS%do_S_ml_bias_adjustment) then
+        CS%Ocean_background_ave%S = CS%Ocean_background_ave%S + CS%S_ml_tend * CS%assim_interval
+      endif
+    endif
+
     !! switch to global pelist
     if (.NOT. CS%assim_method == NO_ASSIM) then
       call set_PElist(CS%filter_pelist)
       call get_profiles(Time, CS%Profiles, CS%CProfiles)
+
+      do m=1,CS%ensemble_size
+        call redistribute_array(CS%domains(m)%mpp_domain, CS%Ocean_background_ave%T,&
+            CS%mpp_domain, CS%Ocean_prior%T(:,:,:,m), complete=.true.)
+        call redistribute_array(CS%domains(m)%mpp_domain, CS%Ocean_background_ave%S,&
+            CS%mpp_domain, CS%Ocean_prior%S(:,:,:,m), complete=.true.)
+        call redistribute_array(CS%domains(m)%mpp_domain, CS%Ocean_background_ave%SSH,&
+            CS%mpp_domain, CS%Ocean_prior%SSH(:,:,m), complete=.true.)
+      enddo
+
+      do m=1,CS%ensemble_size
+        call pass_var(CS%Ocean_prior%T(:,:,:,m),CS%Grid%domain)
+        call pass_var(CS%Ocean_prior%S(:,:,:,m),CS%Grid%domain)
+        call pass_var(CS%Ocean_prior%SSH(:,:,m),CS%Grid%domain)
+      enddo
+
       #ifdef ENABLE_ECDA
         call ensemble_filter(CS%Ocean_prior, CS%Ocean_posterior, CS%CProfiles, CS%kdroot, CS%mpp_domain, CS%oda_grid)
       #endif
@@ -713,10 +725,8 @@ subroutine oda(Time, CS)
     endif
 
     call get_posterior_tracer(Time, CS, increment=.true.)
-    if (CS%do_bias_adjustment) call get_bias_correction_tracer(Time, CS%US, CS)
-    if (CS%do_ml_bias_adjustment) call get_ML_bias_correction(Time, CS%US, CS)
   
-   call cpu_clock_end(id_clock_ensemble_filter)
+    call cpu_clock_end(id_clock_ensemble_filter)
 
   endif
 
@@ -764,8 +774,8 @@ subroutine get_bias_correction_tracer(Time, US, CS)
     enddo
   enddo
 
-  CS%T_bc_tend = T_bias * CS%bias_adjustment_multiplier
-  CS%S_bc_tend = S_bias * CS%bias_adjustment_multiplier
+  CS%T_bc_tend = T_bias * CS%bias_adjustment_multiplier(1)
+  CS%S_bc_tend = S_bias * CS%bias_adjustment_multiplier(2)
 
   call pass_var(CS%T_bc_tend, CS%domains(CS%ensemble_id))
   call pass_var(CS%S_bc_tend, CS%domains(CS%ensemble_id))
@@ -824,8 +834,8 @@ subroutine get_ML_bias_correction(Time, US, CS)
     endif
   enddo; enddo
 
-  CS%T_ml_tend = CS%T_ml_tend * CS%ml_bias_adjustment_multiplier
-  CS%S_ml_tend = CS%S_ml_tend * CS%ml_bias_adjustment_multiplier
+  CS%T_ml_tend = CS%T_ml_tend * CS%ml_bias_adjustment_multiplier(1)
+  CS%S_ml_tend = CS%S_ml_tend * CS%ml_bias_adjustment_multiplier(2)
 
   call pass_var(CS%T_ml_tend, CS%domains(CS%ensemble_id))
   call pass_var(CS%S_ml_tend, CS%domains(CS%ensemble_id))
@@ -954,8 +964,8 @@ subroutine apply_oda_tracer_increments(dt, Time_end, G, GV, tv, h, CS)
   real :: h_neglect, h_neglect_edge                 ! small thicknesses [H ~> m or kg m-2]
 
   if (.not. associated(CS)) return
-  if (CS%assim_method == NO_ASSIM .and. (.not. CS%do_bias_adjustment) &
-    .and. (.not. CS%do_ml_bias_adjustment)) return
+  if (CS%assim_method == NO_ASSIM .and. (.not. CS%do_T_bias_adjustment) .and. (.not. CS%do_S_bias_adjustment) &
+    .and. (.not. CS%do_T_ml_bias_adjustment) .and. (.not. CS%do_S_ml_bias_adjustment)) return
 
   call cpu_clock_begin(id_clock_apply_increments)
 
@@ -964,12 +974,16 @@ subroutine apply_oda_tracer_increments(dt, Time_end, G, GV, tv, h, CS)
     T_tend = T_tend + CS%T_tend
     S_tend = S_tend + CS%S_tend
   endif
-  if (CS%do_bias_adjustment ) then
+  if (CS%do_T_bias_adjustment ) then
     T_tend = T_tend + CS%T_bc_tend
+  endif
+  if (CS%do_S_bias_adjustment ) then
     S_tend = S_tend + CS%S_bc_tend
   endif
-  if (CS%do_ml_bias_adjustment ) then
+  if (CS%do_T_ml_bias_adjustment ) then
     T_tend = T_tend + CS%T_ml_tend
+  endif
+  if (CS%do_S_ml_bias_adjustment ) then
     S_tend = S_tend + CS%S_ml_tend
   endif
 
