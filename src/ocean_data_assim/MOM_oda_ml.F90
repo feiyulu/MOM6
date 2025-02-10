@@ -113,26 +113,34 @@ contains
         ! 3MLD 
         ! find the first index below 10m
         call find_right_index(z_l, reference_depth, value_for_control_depth, zl_index10m)
-        ! the 10m potential density
-        call interpolate(z_l(zl_index10m-1),z_l(zl_index10m),PRHO_profile(zl_index10m-1), PRHO_profile(zl_index10m),reference_depth,PRHO_10m)
-        ! the MLD potential density
-        PRHO_mld = PRHO_10m + PRHO_change
-        ! the first z_l index below MLD
-        call find_right_index(PRHO_profile, PRHO_mld,value_for_control_PRHO, zl_index_mld)
-        ! the MLD depth
-        call interpolate(PRHO_profile(zl_index_mld-1),PRHO_profile(zl_index_mld),z_l(zl_index_mld-1),z_l(zl_index_mld),PRHO_mld,mld_depth)
-        ! the MLD must be below 10m
-        if (mld_depth < 10) then
-            mld_depth = 10
+        if (zl_index10m <= 1) then
+            mld_depth = value_for_control_depth
+        else
+            ! the 10m potential density
+            call interpolate(z_l(zl_index10m-1),z_l(zl_index10m),PRHO_profile(zl_index10m-1), PRHO_profile(zl_index10m),reference_depth,PRHO_10m)
+            ! the MLD potential density
+            PRHO_mld = PRHO_10m + PRHO_change
+            ! the first z_l index below MLD
+            call find_right_index(PRHO_profile, PRHO_mld,value_for_control_PRHO, zl_index_mld)
+            if (zl_index_mld <= 1) then
+                mld_depth = value_for_control_depth
+            else
+                ! the MLD depth
+                call interpolate(PRHO_profile(zl_index_mld-1),PRHO_profile(zl_index_mld),z_l(zl_index_mld-1),z_l(zl_index_mld),PRHO_mld,mld_depth)
+                ! the MLD must be below 10m
+                if (mld_depth < 10) then
+                    mld_depth = 10
+                end if
+            end if
         end if
         ! the first z_l index below 3MLD
-        call find_right_index(z_l, 3*mld_depth,value_for_control_depth, zl_index_3mld)
+        call find_right_index(z_l(1:ml_config%nk-1), 3*mld_depth,value_for_control_depth, zl_index_3mld)
 
-        if (zl_index_3mld >= ml_config%nk) then ! if 3 mld exceeds total number of levels
+        if (zl_index_3mld == 0) then ! if 3 mld not found
             ml_data%T_inc=0.0
         else
-            dummy_var = (ml_data%T(zl_index_3mld+1) + ml_data%S(zl_index_3mld+1) + ml_data%U_left(zl_index_3mld+1) + &
-                    ml_data%U_right(zl_index_3mld+1) + ml_data%V_north(zl_index_3mld+1) + ml_data%V_south(zl_index_3mld+1))/6
+            dummy_var = (ml_data%T(zl_index_3mld+1) + ml_data%S(zl_index_3mld+1) + ml_data%U_left(zl_index_3mld) + &
+                    ml_data%U_right(zl_index_3mld) + ml_data%V_north(zl_index_3mld) + ml_data%V_south(zl_index_3mld))/6
             if (abs(dummy_var) > value_for_control_oceanzvars) then
                 ml_data%T_inc=0.0
             else ! if not nan, then get the vertical profiles
