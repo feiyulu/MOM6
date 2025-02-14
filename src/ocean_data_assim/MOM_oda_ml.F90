@@ -439,7 +439,7 @@ contains
         real(8), intent(in) :: value_for_indexing, bathy_for_control
         right_index = 0 ! if there's so such right index, it will be 0 
         do array1d_i = 1, size(array1d_for_indexing)
-            if (array1d_for_depth(array1d_i)) > bathy_for_control) then
+            if (array1d_for_depth(array1d_i) > bathy_for_control) then
                 return
             else if (array1d_for_indexing(array1d_i) > value_for_indexing) then
                 right_index = array1d_i
