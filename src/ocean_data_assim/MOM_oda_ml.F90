@@ -28,6 +28,8 @@ end type ocean_oda_ml_config
 type, public :: ocean_oda_ml_data
     integer :: nk
     real(8) :: dyCu_left, dyCu_right, dxCv_south, dxCv_north, areacello
+    real(8) :: bathyT, bathyU_left, bathyU_right, bathyV_south, bathyV_north
+    real (8) :: mask2dT, mask2dCu_left, mask2dCu_right, mask2dCv_south, mask2dCv_north 
     !! Input features
     real :: SSH !<sea surface height (m) across ensembles
     real :: taux_left !<zonal wind stress
@@ -91,190 +93,174 @@ contains
         real(8), dimension(:), allocatable :: z_l
         real(8), dimension(16) :: l1_output, l2_output, l3_output
         integer :: zz, i
+        real(8) :: mask_Tuv
 
-        allocate(z_l(ml_config%nk),source=0.0)
-        z_l = ml_config%z_l
-
-        allocate(PRHO_profile(ml_data%nk),source=0.0)
-        do zz  = 1, ml_data%nk
-            SA = ml_data%S(zz)
-            PT = ml_data%T(zz)
-            CT = gsw_ct_from_pt(SA, PT)
-            PRHO = gsw_sigma0(SA, CT)
-            PRHO_profile(zz) = PRHO
-            ! if (zz == 1) then
-            !     allocate(PRHO_profile(1))
-            !     PRHO_profile(1) = PRHO
-            ! else
-            !     call append_value(PRHO_profile, PRHO)
-            ! end if
-        end do
-
-        ! 3MLD 
-        ! find the first index below 10m
-        call find_right_index(z_l, reference_depth, value_for_control_depth, zl_index10m)
-        if (zl_index10m <= 1) then
-            mld_depth = value_for_control_depth
-        else
-            ! the 10m potential density
-            call interpolate(z_l(zl_index10m-1),z_l(zl_index10m),PRHO_profile(zl_index10m-1), PRHO_profile(zl_index10m),reference_depth,PRHO_10m)
-            ! the MLD potential density
-            PRHO_mld = PRHO_10m + PRHO_change
-            ! the first z_l index below MLD
-            call find_right_index(PRHO_profile, PRHO_mld,value_for_control_PRHO, zl_index_mld)
-            if (zl_index_mld <= 1) then
-                mld_depth = value_for_control_depth
-            else
-                ! the MLD depth
-                call interpolate(PRHO_profile(zl_index_mld-1),PRHO_profile(zl_index_mld),z_l(zl_index_mld-1),z_l(zl_index_mld),PRHO_mld,mld_depth)
-                ! the MLD must be below 10m
-                if (mld_depth < 10) then
-                    mld_depth = 10
-                end if
-            end if
-        end if
-        ! the first z_l index below 3MLD
-        call find_right_index(z_l(1:ml_config%nk-1), 3*mld_depth,value_for_control_depth, zl_index_3mld)
-
-        if (zl_index_3mld == 0) then ! if 3 mld not found
+        mask_Tuv = ml_data%mask2dT + ml_data%mask2dCu_left + ml_data%mask2dCu_right + ml_data%mask2dCv_south + ml_data%mask2dCv_north
+        if (mask_Tuv < 5.0) then
             ml_data%T_inc=0.0
         else
-            dummy_var = (ml_data%T(zl_index_3mld+1) + ml_data%S(zl_index_3mld+1) + ml_data%U_left(zl_index_3mld) + &
-                    ml_data%U_right(zl_index_3mld) + ml_data%V_north(zl_index_3mld) + ml_data%V_south(zl_index_3mld))/6
-            if (abs(dummy_var) > value_for_control_oceanzvars) then
+            allocate(z_l(ml_config%nk),source=0.0)
+            z_l = ml_config%z_l
+
+            allocate(PRHO_profile(ml_data%nk),source=0.0)
+            do zz  = 1, ml_data%nk
+                SA = ml_data%S(zz)
+                PT = ml_data%T(zz)
+                CT = gsw_ct_from_pt(SA, PT)
+                PRHO = gsw_sigma0(SA, CT)
+                PRHO_profile(zz) = PRHO
+            end do
+
+            ! find 3 MLD
+            ! first find the first index below 10m
+            call find_right_index(z_l, reference_depth, ml_data%bathyT, z_l, zl_index10m)
+            ! if zl_index10m is not found or it is 1, set mld_depth to be bathyT, so that the ml inference will not be done
+            if (zl_index10m <= 1) then
+                mld_depth = ml_data%bathyT
+            else
+                ! the 10m potential density
+                call interpolate(z_l(zl_index10m-1),z_l(zl_index10m),PRHO_profile(zl_index10m-1), PRHO_profile(zl_index10m),reference_depth,PRHO_10m)
+                ! the MLD potential density
+                PRHO_mld = PRHO_10m + PRHO_change
+                ! the first z_l index below MLD
+                call find_right_index(PRHO_profile, PRHO_mld, ml_data%bathyT, z_l, zl_index_mld)
+                ! if zl_index10m is not found or it is 1, set mld_depth to be bathyT, so that the ml inference will not be done
+                if (zl_index_mld <= 1) then
+                    mld_depth = ml_data%bathyT
+                else
+                    ! the MLD depth
+                    call interpolate(PRHO_profile(zl_index_mld-1),PRHO_profile(zl_index_mld),z_l(zl_index_mld-1),z_l(zl_index_mld),PRHO_mld,mld_depth)
+                    ! the MLD must be below 10m
+                    if (mld_depth < 10) then
+                        mld_depth = 10
+                    end if
+                end if
+            end if
+
+            ! the first z_l index below 3MLD
+            call find_right_index(z_l(1:ml_config%nk-1), 3*mld_depth, ml_data%bathyT, z_l, zl_index_3mld)
+
+            if (zl_index_3mld == 0) then ! if 3 mld not found
                 ml_data%T_inc=0.0
-            else ! if not nan, then get the vertical profiles
+            else
+                if (z_l(zl_index_3mld+1) > ml_data%bathyT .OR. &
+                    z_l(zl_index_3mld) > ml_data%bathyU_left .OR. &
+                    z_l(zl_index_3mld) > ml_data%bathyU_right .OR. &
+                    z_l(zl_index_3mld) > ml_data%bathyV_south .OR. &
+                    z_l(zl_index_3mld) > ml_data%bathyV_north) then
+                    ml_data%T_inc=0.0
+                else ! if above bathy, then get the vertical profiles
 
-                zi_to_sigma = ml_config%z_i(2:zl_index_3mld + 1)/mld_depth
-                allocate(thetao_zgrad_profile(zl_index_3mld),source=0.0)
-                allocate(so_zgrad_profile(zl_index_3mld),source=0.0)
-                allocate(PRHO_zgrad_profile(zl_index_3mld),source=0.0)
+                    zi_to_sigma = ml_config%z_i(2:zl_index_3mld + 1)/mld_depth
+                    allocate(thetao_zgrad_profile(zl_index_3mld),source=0.0)
+                    allocate(so_zgrad_profile(zl_index_3mld),source=0.0)
+                    allocate(PRHO_zgrad_profile(zl_index_3mld),source=0.0)
 
-                do zz = 1, zl_index_3mld
-                    thetao_top = ml_data%T(zz)
-                    so_top = ml_data%S(zz)
-                    CT = gsw_ct_from_pt(so_top,thetao_top)
-                    PRHO_top = gsw_sigma0(so_top,CT)
+                    do zz = 1, zl_index_3mld
+                        thetao_top = ml_data%T(zz)
+                        so_top = ml_data%S(zz)
+                        CT = gsw_ct_from_pt(so_top,thetao_top)
+                        PRHO_top = gsw_sigma0(so_top,CT)
                     
-                    thetao_bottom = ml_data%T(zz+1)
-                    so_bottom = ml_data%S(zz+1)
-                    CT = gsw_ct_from_pt(so_bottom,thetao_bottom)
-                    PRHO_bottom = gsw_sigma0(so_bottom,CT)
+                        thetao_bottom = ml_data%T(zz+1)
+                        so_bottom = ml_data%S(zz+1)
+                        CT = gsw_ct_from_pt(so_bottom,thetao_bottom)
+                        PRHO_bottom = gsw_sigma0(so_bottom,CT)
 
-                    thetao_zgrad_profile(zz) = (thetao_top - thetao_bottom)/(z_l(zz+1) - z_l(zz))
-                    so_zgrad_profile(zz) = (so_top - so_bottom)/(z_l(zz+1) - z_l(zz))
-                    PRHO_zgrad_profile(zz) = (PRHO_top - PRHO_bottom)/(z_l(zz+1) - z_l(zz))
+                        thetao_zgrad_profile(zz) = (thetao_top - thetao_bottom)/(z_l(zz+1) - z_l(zz))
+                        so_zgrad_profile(zz) = (so_top - so_bottom)/(z_l(zz+1) - z_l(zz))
+                        PRHO_zgrad_profile(zz) = (PRHO_top - PRHO_bottom)/(z_l(zz+1) - z_l(zz))
+                    end do
 
-                    ! thetao_zgrad = (thetao_top - thetao_bottom)/(z_l(zz+1) - z_l(zz))
-                    ! so_zgrad = (so_top - so_bottom)/(z_l(zz+1) - z_l(zz))
-                    ! PRHO_zgrad = (PRHO_top - PRHO_bottom)/(z_l(zz+1) - z_l(zz))
-                    ! append them to 1D array
-                    ! if (zz == 1) then
-                    !     allocate(thetao_zgrad_profile(1))
-                    !     thetao_zgrad_profile(1) = thetao_zgrad
-                    !     allocate(so_zgrad_profile(1))
-                    !     so_zgrad_profile(1) = so_zgrad
-                    !     allocate(PRHO_zgrad_profile(1))
-                    !     PRHO_zgrad_profile(1) = PRHO_zgrad
-                    ! else
-                    !     call append_value(thetao_zgrad_profile, thetao_zgrad)
-                    !     call append_value(so_zgrad_profile, so_zgrad)
-                    !     call append_value(PRHO_zgrad_profile, PRHO_zgrad)
-                    ! end if
-                end do
-                zl_to_sigma = z_l(1:zl_index_3mld)/mld_depth
+                    zl_to_sigma = z_l(1:zl_index_3mld)/mld_depth
 
-                allocate(div_profile(zl_index_3mld),source=0.0)
+                    allocate(div_profile(zl_index_3mld),source=0.0)
 
-                do zz = 1, zl_index_3mld
-                    call compute_current_divergence(ml_data%U_left(zz)*ml_data%dyCu_left, ml_data%U_right(zz)*ml_data%dyCu_right, &
-                            ml_data%V_south(zz)*ml_data%dxCv_south, ml_data%V_north(zz)*ml_data%dxCv_north, &
-                            ml_data%areacello, div)
-                    div_profile(zz) = div
-                    ! if (zz == 1) then
-                    !     allocate(div_profile(1))
-                    !     div_profile(1) = div
-                    ! else
-                    !     call append_value(div_profile, div)
-                    ! end if
-                end do 
+                    do zz = 1, zl_index_3mld
+                        call compute_current_divergence(ml_data%U_left(zz)*ml_data%dyCu_left, ml_data%U_right(zz)*ml_data%dyCu_right, &
+                                ml_data%V_south(zz)*ml_data%dxCv_south, ml_data%V_north(zz)*ml_data%dxCv_north, &
+                                ml_data%areacello, div)
+                        div_profile(zz) = div
+                    end do 
             
             
-                ! interpolate values to target_sigmas
-                do i = 1, 15
-                    call find_right_index(zi_to_sigma, target_sigmas(i),value_for_control_depth, right_index)
-                    if (right_index == 1) then
-                        thetao_zgrad_sigma(i) = thetao_zgrad_profile(1)
-                        so_zgrad_sigma(i) = so_zgrad_profile(1)
-                        PRHO_zgrad_sigma(i) = PRHO_zgrad_profile(1)
-                    else
-                        call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),thetao_zgrad_profile(right_index-1), &
-                                thetao_zgrad_profile(right_index),target_sigmas(i),thetao_zgrad_sigma(i))
-                        call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),so_zgrad_profile(right_index-1), &
-                                so_zgrad_profile(right_index),target_sigmas(i),so_zgrad_sigma(i))
-                        call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),PRHO_zgrad_profile(right_index-1), &
-                                PRHO_zgrad_profile(right_index),target_sigmas(i),PRHO_zgrad_sigma(i))
-                    end if
+                    ! interpolate values to target_sigmas
+                    do i = 1, 15
+                        call find_right_index_clean(zi_to_sigma, target_sigmas(i), right_index)
+                        ! quality control done in the previous steps, so that right_index >=1 and right_index <= zl_index_3mld
+                        if (right_index == 1) then
+                            thetao_zgrad_sigma(i) = thetao_zgrad_profile(1)
+                            so_zgrad_sigma(i) = so_zgrad_profile(1)
+                            PRHO_zgrad_sigma(i) = PRHO_zgrad_profile(1)
+                        else
+                            call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),thetao_zgrad_profile(right_index-1), &
+                                    thetao_zgrad_profile(right_index),target_sigmas(i),thetao_zgrad_sigma(i))
+                            call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),so_zgrad_profile(right_index-1), &
+                                    so_zgrad_profile(right_index),target_sigmas(i),so_zgrad_sigma(i))
+                            call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),PRHO_zgrad_profile(right_index-1), &
+                                    PRHO_zgrad_profile(right_index),target_sigmas(i),PRHO_zgrad_sigma(i))
+                        end if
 
-                    call find_right_index(zl_to_sigma, target_sigmas(i),value_for_control_depth, right_index)
-                    if (right_index == 1) then
-                        div_sigma(i) = div_profile(1)
-                    else
-                        call interpolate(zl_to_sigma(right_index-1),zl_to_sigma(right_index),div_profile(right_index-1),div_profile(right_index),target_sigmas(i),div_sigma(i))
-                    end if
-                end do
-
-                tauamp = sqrt(((ml_data%taux_left+ml_data%taux_right)/2)**2+((ml_data%tauy_south+ml_data%tauy_north)/2)**2)
-
-                ! subroutine(input,DA tendency)        
-                ANN_input(1:15) = thetao_zgrad_sigma*100
-                ANN_input(16:30) = PRHO_zgrad_sigma*100
-                ANN_input(31:45) = div_sigma*1E7
-                ANN_input(46) = mld_depth*0.1
-                ANN_input(47) = tauamp*100
-                ANN_input(48) = ml_data%latent*0.1
-                ANN_input(49) = ml_data%sensible*0.1
-                ANN_input(50) = ml_data%lw*0.1
-                ANN_input(51) = ml_data%sw*0.1
-
-                l1_output = max(ReLU_zero, matmul(ml_config%l1_weight, ANN_input) + ml_config%l1_bias)
-                l2_output = max(ReLU_zero, matmul(ml_config%l2_weight, l1_output) + ml_config%l2_bias)
-                l3_output = matmul(ml_config%l3_weight, l2_output) + ml_config%l3_bias
-                !print *, l3_output
-                ! l3_output is the predicted flux
-                output_DT_sigmas =  (l3_output(1:15)-l3_output(2:16))/(0.2*mld_depth)
-                !print *, zi_to_sigma
-                !print *, zl_to_sigma
-                allocate(output_flux_at_zi(zl_index_3mld+1))
-                output_flux_at_zi(1) = l3_output(1)
-                do zz = 1, zl_index_3mld
-                    call find_right_index(output_flux_sigmas, zi_to_sigma(zz),value_for_control_depth, right_index)
-                    if (right_index == 0) then
-                        output_flux_at_zi(zz+1) = 0.0
-                    else
-                        call interpolate(output_flux_sigmas(right_index-1),output_flux_sigmas(right_index),l3_output(right_index-1),&
-                                l3_output(right_index),zi_to_sigma(zz),output_flux_at_zi(zz+1))
+                        call find_right_index_clean(zl_to_sigma, target_sigmas(i), right_index)
+                        if (right_index == 1) then
+                            div_sigma(i) = div_profile(1)
+                        else
+                            call interpolate(zl_to_sigma(right_index-1),zl_to_sigma(right_index),div_profile(right_index-1),div_profile(right_index),target_sigmas(i),div_sigma(i))
+                        end if
+                    end do
                     
-                    end if       
-                end do
+                    tauamp = sqrt(((ml_data%taux_left+ml_data%taux_right)/2)**2+((ml_data%tauy_south+ml_data%tauy_north)/2)**2)
+
+                    ! subroutine(input,DA tendency)        
+                    ANN_input(1:15) = thetao_zgrad_sigma*100
+                    ANN_input(16:30) = PRHO_zgrad_sigma*100
+                    ANN_input(31:45) = div_sigma*1E7
+                    ANN_input(46) = mld_depth*0.1
+                    ANN_input(47) = tauamp*100
+                    ANN_input(48) = ml_data%latent*0.1
+                    ANN_input(49) = ml_data%sensible*0.1
+                    ANN_input(50) = ml_data%lw*0.1
+                    ANN_input(51) = ml_data%sw*0.1
+
+                    l1_output = max(ReLU_zero, matmul(ml_config%l1_weight, ANN_input) + ml_config%l1_bias)
+                    l2_output = max(ReLU_zero, matmul(ml_config%l2_weight, l1_output) + ml_config%l2_bias)
+                    l3_output = matmul(ml_config%l3_weight, l2_output) + ml_config%l3_bias
+                    
+                    ! l3_output is the predicted flux
+                    output_DT_sigmas =  (l3_output(1:15)-l3_output(2:16))/(0.2*mld_depth)
+                    
+                    allocate(output_flux_at_zi(zl_index_3mld+1))
+                    output_flux_at_zi(1) = l3_output(1)
+                    do zz = 1, zl_index_3mld
+                        call find_right_index_clean(output_flux_sigmas, zi_to_sigma(zz), right_index)
+                        if (right_index == 0) then
+                            output_flux_at_zi(zz+1) = 0.0
+                        ! it is known that right_index > 1
+                        else
+                            call interpolate(output_flux_sigmas(right_index-1),output_flux_sigmas(right_index),l3_output(right_index-1),&
+                                    l3_output(right_index),zi_to_sigma(zz),output_flux_at_zi(zz+1))
+                    
+                        end if       
+                    end do
                 
-                allocate(output_DT_at_zl(zl_index_3mld))
-                do zz = 1, zl_index_3mld
-                    call find_right_index(target_sigmas, zl_to_sigma(zz),value_for_control_depth, right_index)
-                    if (right_index == 0) then
-                        output_DT_at_zl(zz) = 0.0
-                    else if (right_index == 1) then
-                        output_DT_at_zl(zz) = output_DT_sigmas(1)
-                    else
-                        call interpolate(target_sigmas(right_index-1),target_sigmas(right_index),output_DT_sigmas(right_index-1),&
-                                output_DT_sigmas(right_index),zl_to_sigma(zz),output_DT_at_zl(zz))
-                    end if
-                end do
+                    allocate(output_DT_at_zl(zl_index_3mld))
+                    do zz = 1, zl_index_3mld
+                        call find_right_index_clean(target_sigmas, zl_to_sigma(zz), right_index)
+                        if (right_index == 0) then
+                            output_DT_at_zl(zz) = 0.0
+                        else if (right_index == 1) then
+                            output_DT_at_zl(zz) = output_DT_sigmas(1)
+                        else
+                            call interpolate(target_sigmas(right_index-1),target_sigmas(right_index),output_DT_sigmas(right_index-1),&
+                                    output_DT_sigmas(right_index),zl_to_sigma(zz),output_DT_at_zl(zz))
+                        end if
+                    end do
 
-                ml_data%T_inc(1:zl_index_3mld)=output_DT_at_zl / seconds_in_30_days
-            endif
-        endif ! end if 3 mld exceeds total number of levels
-
+                    ml_data%T_inc(1:zl_index_3mld)=output_DT_at_zl / seconds_in_30_days
+                endif
+            endif ! end if 3 mld exceeds total number of levels
+        
+        endif
         ml_data%S_inc=0.0
 
     end subroutine oda_ml_inference
@@ -442,53 +428,41 @@ contains
         thisy = (thisx-x1)/(x2-x1)*(y2-y1) + y1
     end subroutine interpolate
 
-    ! to get an 1D array with variable size, appending values
-    ! subroutine append_value(old_array, new_value)
-    !     implicit none
-    !     real(8), dimension(:), allocatable, intent(inout) :: old_array
-    !     real(8), intent(in) :: new_value
-    !     integer :: old_size, new_size
-    !     real(8), dimension(:), allocatable :: temp_array
-    !     old_size = size(old_array)
-    !     new_size = old_size + 1
 
-    !     ! Temporarily allocate a new array to hold the combined values
-    !     allocate(temp_array(new_size))
-
-    !     ! Copy old values to the new array
-    !     temp_array(1:old_size) = old_array
-
-    !     ! Append the new value to the new array
-    !     temp_array(new_size) = new_value
-
-    !     ! Deallocate the old array and reallocate it with the new size
-    !     deallocate(old_array)
-    !     allocate(old_array(new_size))
-
-    !     ! Copy the combined values back to the original array
-    !     old_array = temp_array
-
-    !     ! Deallocate the temporary array
-    !     deallocate(temp_array)
-    ! end subroutine append_value
 
     ! Subroutine to find the index. 1D array (index) is greater than the given value
-    Subroutine find_right_index(array1d_for_indexing, value_for_indexing,value_for_control, right_index)
+    Subroutine find_right_index(array1d_for_indexing, value_for_indexing, bathy_for_control, array1d_for_depth, right_index)
+        implicit none
+        real(8), intent(in) :: array1d_for_indexing(:), array1d_for_depth(:)
+        integer :: array1d_i
+        integer, intent(out) :: right_index
+        real(8), intent(in) :: value_for_indexing, bathy_for_control
+        right_index = 0 ! if there's so such right index, it will be 0 
+        do array1d_i = 1, size(array1d_for_indexing)
+            if (array1d_for_depth(array1d_i)) > bathy_for_control) then
+                return
+            else if (array1d_for_indexing(array1d_i) > value_for_indexing) then
+                right_index = array1d_i
+                return
+            end if
+        end do
+    end subroutine find_right_index
+
+    ! Subroutine to find the index. 1D array (index) is greater than the given value, no control value needed.
+    Subroutine find_right_index_clean(array1d_for_indexing, value_for_indexing, right_index)
         implicit none
         real(8), intent(in) :: array1d_for_indexing(:)
         integer :: array1d_i
         integer, intent(out) :: right_index
-        real(8), intent(in) :: value_for_indexing, value_for_control
+        real(8), intent(in) :: value_for_indexing
         right_index = 0 ! if there's so such right index, it will be 0 
         do array1d_i = 1, size(array1d_for_indexing)
-            if (abs(array1d_for_indexing(array1d_i)) > value_for_control) then
-            return
-            else if (array1d_for_indexing(array1d_i) > value_for_indexing) then
-            right_index = array1d_i
-            return
+            if (array1d_for_indexing(array1d_i) > value_for_indexing) then
+                right_index = array1d_i
+                return
             end if
         end do
-    end subroutine find_right_index
+    end subroutine find_right_index_clean
 
     ! Subroutine to compute divergence
     Subroutine compute_current_divergence(uy_left, uy_right, vx_south, vy_north, area, div)
@@ -500,183 +474,6 @@ contains
 
     end subroutine compute_current_divergence
 
-    ! Subroutine to read a grid NetCDF file
-    ! Subroutine read_grid_file(filename, varname, xdimindex, ydimindex, varvalue)
-    !     implicit none
 
-    !     integer :: ncid, varid, retval
-    !     integer, intent(in) :: xdimindex, ydimindex
-    !     character(len=*), intent(in) :: filename, varname
-    !     real(8), intent(out) :: varvalue
-
-    !     ! Open the NetCDF file
-    !     retval = nf90_open(filename, nf90_nowrite, ncid)
-    !     if (retval /= nf90_noerr) then
-    !         print *, 'Error: Unable to open file'
-    !         stop
-    !     endif
-
-    !     ! Get the variable ID
-    !     retval = nf90_inq_varid(ncid, varname, varid)
-    !     if (retval == nf90_noerr) then
-    !         ! Read the values
-    !         retval = nf90_get_var(ncid, varid, varvalue, start = (/xdimindex,ydimindex/))
-    !         if (retval /= nf90_noerr) then
-    !         print *, 'Error: Unable to get the grid info'
-    !         stop
-    !         endif
-    !     else
-    !         print *, 'Error: this grid info not found'
-    !     endif
-
-    !     ! Close the NetCDF file
-    !     retval = nf90_close(ncid)
-    !     if (retval /= nf90_noerr) then
-    !         print *, 'Error: Unable to close file'
-    !         stop
-    !     endif
-
-    ! end subroutine read_grid_file
-
-
-    ! Subroutine to read a single (time, lev, lat, lon) NetCDF file
-    ! subroutine read_netcdf_file_zlzi(filename, dimname1, dimname2,dimvalues1,dimvalues2)
-    !     implicit none
-
-    !     ! Declare variables
-    !     integer :: ncid, varid1, varid2, retval
-    !     real(8), dimension(75), intent(out) :: dimvalues1
-    !     real(8), dimension(76), intent(out) :: dimvalues2
-    !     character(len=*), intent(in) :: filename, dimname1, dimname2
-
-
-    !     ! Open the NetCDF file
-    !     retval = nf90_open(filename, nf90_nowrite, ncid)
-    !     if (retval /= nf90_noerr) then
-    !         print *, 'Error: Unable to open file'
-    !         stop
-    !     endif
-
-    !     ! Get the variable ID for varname
-    !     retval = nf90_inq_varid(ncid, dimname1, varid1)
-    !     if (retval /= nf90_noerr) then
-    !         print *, 'Error: Unable to get variable ID'
-    !         stop
-    !     endif
-    !     retval = nf90_inq_varid(ncid, dimname2, varid2)
-    !     if (retval /= nf90_noerr) then
-    !         print *, 'Error: Unable to get variable ID'
-    !         stop
-    !     endif
-
-
-    !     ! Read the data
-    !     retval = nf90_get_var(ncid, varid1, dimvalues1)
-
-    !     if (retval /= nf90_noerr) then
-    !         print *, 'Error: Unable to read data'
-    !         stop
-    !     endif
-
-    !     retval = nf90_get_var(ncid, varid2, dimvalues2)
-
-    !     if (retval /= nf90_noerr) then
-    !         print *, 'Error: Unable to read data'
-    !         stop
-    !     endif
-
-    !     ! Close the NetCDF file
-    !     retval = nf90_close(ncid)
-    !     if (retval /= nf90_noerr) then
-    !         print *, 'Error: Unable to close file'
-    !         stop
-    !     endif
-
-    ! end subroutine read_netcdf_file_zlzi
-
-    ! Subroutine to read a single (time, lev, lat, lon) NetCDF file
-    ! subroutine read_netcdf_file_4d(filename, varname, xdimindex, ydimindex, zdimindex, timedimindex, varvalue)
-    !     implicit none
-
-    !     ! Declare variables
-    !     integer :: ncid, varid, retval
-    !     integer, intent(in) :: xdimindex, ydimindex, timedimindex, zdimindex
-    !     real(8), intent(out) :: varvalue
-    !     character(len=*), intent(in) :: filename, varname
-
-
-    !     ! Open the NetCDF file
-    !     retval = nf90_open(filename, nf90_nowrite, ncid)
-    !     if (retval /= nf90_noerr) then
-    !         print *, 'Error: Unable to open file'
-    !         stop
-    !     endif
-
-    !     ! Get the variable ID for varname
-    !     retval = nf90_inq_varid(ncid, varname, varid)
-    !     if (retval /= nf90_noerr) then
-    !         print *, 'Error: Unable to get variable ID'
-    !         stop
-    !     endif
-
-
-    !     ! Read the data
-    !     retval = nf90_get_var(ncid, varid, varvalue, start = (/xdimindex, ydimindex,zdimindex, timedimindex/))
-
-    !     if (retval /= nf90_noerr) then
-    !         print *, 'Error: Unable to read data'
-    !         stop
-    !     endif
-
-    !     ! Close the NetCDF file
-    !     retval = nf90_close(ncid)
-    !     if (retval /= nf90_noerr) then
-    !         print *, 'Error: Unable to close file'
-    !         stop
-    !     endif
-
-    ! end subroutine read_netcdf_file_4d
-
-    ! Subroutine to read a single (time, lat, lon) NetCDF file
-    ! subroutine read_netcdf_file_3d(filename, varname,xdimindex, ydimindex, timedimindex, varvalue)
-    !     implicit none
-
-    !     ! Declare variables
-    !     integer :: ncid, varid, retval
-    !     integer, intent(in) :: xdimindex, ydimindex, timedimindex
-    !     real(8) :: varvalue
-    !     character(len=*), intent(in) :: filename, varname
-
-
-    !     ! Open the NetCDF file
-    !     retval = nf90_open(filename, nf90_nowrite, ncid)
-    !     if (retval /= nf90_noerr) then
-    !         print *, 'Error: Unable to open file'
-    !         stop
-    !     endif
-
-    !     ! Get the variable ID for varname
-    !     retval = nf90_inq_varid(ncid, varname, varid)
-    !     if (retval /= nf90_noerr) then
-    !         print *, 'Error: Unable to get variable ID'
-    !         stop
-    !     endif
-
-
-    !     ! Read the data
-    !     retval = nf90_get_var(ncid, varid, varvalue, start = (/xdimindex, ydimindex, timedimindex/))
-    !     if (retval /= nf90_noerr) then
-    !         print *, 'Error: Unable to read data'
-    !         stop
-    !     endif
-
-    !     ! Close the NetCDF file
-    !     retval = nf90_close(ncid)
-    !     if (retval /= nf90_noerr) then
-    !         print *, 'Error: Unable to close file'
-    !         stop
-    !     endif
-
-    ! end subroutine read_netcdf_file_3d
 
 end module MOM_oda_ml_mod
