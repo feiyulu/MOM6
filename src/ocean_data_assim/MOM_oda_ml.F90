@@ -55,9 +55,9 @@ end type ocean_oda_ml_data
 
 real(8) :: PRHO_change = 0.03
 real(8) :: reference_depth = 10
-real(8) :: value_for_control_depth = 1E6
-real(8) :: value_for_control_PRHO = 999
-real(8) :: value_for_control_oceanzvars = 1E5
+!real(8) :: value_for_control_depth = 1E6
+!real(8) :: value_for_control_PRHO = 999
+!real(8) :: value_for_control_oceanzvars = 1E5
 real(8) :: ReLU_zero = 0
 real(8), dimension(15) :: target_sigmas = (/0.1,0.3,0.5,0.7,0.9,1.1,1.3,1.5,1.7,1.9,2.1,2.3,2.5,2.7,2.9/)
 real(8), dimension(16) :: output_flux_sigmas = (/0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.2, 2.4, 2.6, 2.8, 3.0/)
@@ -80,7 +80,7 @@ contains
         
         real(8) :: SA, PT, CT, PRHO ,tauamp
         real(8), dimension(:), allocatable :: PRHO_profile
-        real(8) :: PRHO_mld, PRHO_10m, dummy_var 
+        real(8) :: PRHO_mld, PRHO_10m 
         real(8) :: mld_depth
         integer :: zl_index_mld, zl_index10m, zl_index_3mld, right_index
         real(8), dimension(:), allocatable :: zl_to_sigma, zi_to_sigma
