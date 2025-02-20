@@ -1029,12 +1029,14 @@ subroutine step_MOM(forces_in, fluxes_in, sfc_state, Time_start, time_int_in, CS
   enddo ; enddo ; endif
 
   if (CS%ensemble_ocean) then
-    ! store ensemble vector in odaCS
-    call set_prior_tracer(CS%Time, G, GV, CS%h, CS%tv, CS%u, CS%v, ssh, fluxes, forces, CS%odaCS)
     ! call DA interface
     call oda(CS%Time,CS%odaCS)
     ! update the time for the next analysis step if needed
     call set_analysis_time(CS%Time,CS%odaCS)
+    ! store ensemble vector in odaCS
+    call set_prior_tracer(CS%Time, G, GV, CS%h, CS%tv, CS%u, CS%v, ssh, fluxes, forces, CS%odaCS)
+    ! apply increments
+    call apply_oda_tracer_increments(CS%Time, G, GV, CS%tv, CS%h, CS%odaCS)
   endif
 
   if (showCallTree) call callTree_waypoint("calling extract_surface_state (step_MOM)")
@@ -1547,15 +1549,15 @@ subroutine step_MOM_thermo(CS, G, GV, US, u, v, h, tv, fluxes, dtdia, &
 
   call enable_averages(dtdia, Time_end_thermo, CS%diag)
 
-  if (associated(CS%odaCS)) then
-    if (CS%debug) then
-      call MOM_thermo_chksum("Pre-oda ", tv, G, US, haloshift=0)
-    endif
-    call apply_oda_tracer_increments(dtdia, Time_end_thermo, G, GV, tv, h, CS%odaCS)
-    if (CS%debug) then
-      call MOM_thermo_chksum("Post-oda ", tv, G, US, haloshift=0)
-    endif
-  endif
+  ! if (associated(CS%odaCS)) then
+  !   if (CS%debug) then
+  !     call MOM_thermo_chksum("Pre-oda ", tv, G, US, haloshift=0)
+  !   endif
+  !   call apply_oda_tracer_increments(dtdia, Time_end_thermo, G, GV, tv, h, CS%odaCS)
+  !   if (CS%debug) then
+  !     call MOM_thermo_chksum("Post-oda ", tv, G, US, haloshift=0)
+  !   endif
+  ! endif
 
   if (associated(fluxes%p_surf) .or. associated(fluxes%p_surf_full)) then
     call extract_diabatic_member(CS%diabatic_CSp, diabatic_halo=halo_sz)
