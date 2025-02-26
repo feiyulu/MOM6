@@ -1143,8 +1143,6 @@ subroutine apply_oda_tracer_increments(Time, G, GV, tv, h, CS)
   endif
   call disable_averaging(CS%diag_CS)
 
-  call diag_update_remap_grids(CS%diag_CS)
-
   call cpu_clock_end(id_clock_apply_increments)
 
 end subroutine apply_oda_tracer_increments
