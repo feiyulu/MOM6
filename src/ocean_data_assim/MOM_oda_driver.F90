@@ -646,7 +646,7 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, model_u, model_v, model_ssh, flu
   if (CS%id_prior_sw > 0) call post_data(CS%id_prior_sw, fluxes%sw, CS%diag_CS)
   
   call disable_averaging(CS%diag_CS)
-  call diag_update_remap_grids(CS%diag_CS)
+  ! call diag_update_remap_grids(CS%diag_CS)
 
   ! call enable_averaging(CS%prior_interval, CS%Prior_Time, CS%diag_CS)
   ! if (CS%id_prior_t > 0) call post_data(CS%id_prior_t, T, CS%diag_CS)
