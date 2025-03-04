@@ -17,19 +17,19 @@ public :: oda_ml_init, oda_ml_end, oda_ml_inference
 ! Data structure to save the ML configuration, input, and output data
 type, public :: ocean_oda_ml_config ; private
     character(len=255)  :: filename
-    real(8), dimension(16,51)  :: l1_weight
-    real(8), dimension(16,16)  :: l2_weight, l3_weight
-    real(8), dimension(16) :: l1_bias, l2_bias, l3_bias
-    real(8), dimension(:), allocatable :: z_l
-    real(8), dimension(:), allocatable :: z_i
+    real, dimension(16,51)  :: l1_weight
+    real, dimension(16,16)  :: l2_weight, l3_weight
+    real, dimension(16) :: l1_bias, l2_bias, l3_bias
+    real, dimension(:), allocatable :: z_l
+    real, dimension(:), allocatable :: z_i
     integer :: nk
 end type ocean_oda_ml_config
 
 type, public :: ocean_oda_ml_data
     integer :: nk
-    real(8) :: dyCu_left, dyCu_right, dxCv_south, dxCv_north, areacello
-    real(8) :: bathyT, bathyU_left, bathyU_right, bathyV_south, bathyV_north
-    real (8) :: mask2dT, mask2dCu_left, mask2dCu_right, mask2dCv_south, mask2dCv_north 
+    real :: dyCu_left, dyCu_right, dxCv_south, dxCv_north, areacello
+    real :: bathyT, bathyU_left, bathyU_right, bathyV_south, bathyV_north
+    real :: mask2dT, mask2dCu_left, mask2dCu_right, mask2dCv_south, mask2dCv_north 
     !! Input features
     real :: SSH !<sea surface height (m) across ensembles
     real :: taux_left !<zonal wind stress
@@ -53,16 +53,16 @@ type, public :: ocean_oda_ml_data
 
 end type ocean_oda_ml_data
 
-real(8) :: PRHO_change = 0.03
-real(8) :: reference_depth = 10
-!real(8) :: value_for_control_depth = 1E6
-!real(8) :: value_for_control_PRHO = 999
-!real(8) :: value_for_control_oceanzvars = 1E5
-real(8) :: ReLU_zero = 0
-real(8), dimension(15) :: target_sigmas = (/0.1,0.3,0.5,0.7,0.9,1.1,1.3,1.5,1.7,1.9,2.1,2.3,2.5,2.7,2.9/)
-real(8), dimension(16) :: output_flux_sigmas = (/0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.2, 2.4, 2.6, 2.8, 3.0/)
+real :: PRHO_change = 0.03
+real :: reference_depth = 10
+!real :: value_for_control_depth = 1E6
+!real :: value_for_control_PRHO = 999
+!real :: value_for_control_oceanzvars = 1E5
+real :: ReLU_zero = 0
+real, dimension(15) :: target_sigmas = (/0.1,0.3,0.5,0.7,0.9,1.1,1.3,1.5,1.7,1.9,2.1,2.3,2.5,2.7,2.9/)
+real, dimension(16) :: output_flux_sigmas = (/0.0, 0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.4, 1.6, 1.8, 2.0, 2.2, 2.4, 2.6, 2.8, 3.0/)
 character(len=255)  :: danni_ANN_name = '/gpfs/f5/gfdl_sd/world-shared/Feiyu.Lu/ECDA_data/ML/danni_ANN_weights_2006_2010_6epoch.nc'
-real(8) :: seconds_in_30_days = 3600*24*30
+real :: seconds_in_30_days = 3600*24*30
 
 integer :: id_clock_ml_remapping
 integer :: id_clock_ml_normalization
@@ -78,20 +78,20 @@ contains
         type(ocean_oda_ml_config), pointer, intent(in) :: ml_config
         type(ocean_oda_ml_data), pointer, intent(in) :: ml_data
         
-        real(8) :: SA, PT, CT, PRHO ,tauamp
-        real(8), dimension(:), allocatable :: PRHO_profile
-        real(8) :: PRHO_mld, PRHO_10m 
-        real(8) :: mld_depth
+        real :: SA, PT, CT, PRHO ,tauamp
+        real, dimension(:), allocatable :: PRHO_profile
+        real :: PRHO_mld, PRHO_10m 
+        real :: mld_depth
         integer :: zl_index_mld, zl_index10m, zl_index_3mld, right_index
-        real(8), dimension(:), allocatable :: zl_to_sigma, zi_to_sigma
-        real(8) :: thetao, so, uo_left, uo_right, vo_south, vo_north, div, thetao_top, thetao_bottom, so_top,so_bottom
-        real(8) :: so_zgrad,thetao_zgrad, PRHO_top, PRHO_bottom, PRHO_zgrad
-        real(8), dimension(15) :: thetao_zgrad_sigma, so_zgrad_sigma, PRHO_zgrad_sigma, div_sigma, output_DT_sigmas
-        real(8), dimension(:), allocatable :: thetao_zgrad_profile, so_zgrad_profile, div_profile, PRHO_zgrad_profile
-        real(8), dimension(51) :: ANN_input
-        real(8), dimension(:), allocatable :: output_DT_at_zl, output_flux_at_zi
-        real(8), dimension(:), allocatable :: z_l
-        real(8), dimension(16) :: l1_output, l2_output, l3_output
+        real, dimension(:), allocatable :: zl_to_sigma, zi_to_sigma
+        real :: thetao, so, uo_left, uo_right, vo_south, vo_north, div, thetao_top, thetao_bottom, so_top,so_bottom
+        real :: so_zgrad,thetao_zgrad, PRHO_top, PRHO_bottom, PRHO_zgrad
+        real, dimension(15) :: thetao_zgrad_sigma, so_zgrad_sigma, PRHO_zgrad_sigma, div_sigma, output_DT_sigmas
+        real, dimension(:), allocatable :: thetao_zgrad_profile, so_zgrad_profile, div_profile, PRHO_zgrad_profile
+        real, dimension(51) :: ANN_input
+        real, dimension(:), allocatable :: output_DT_at_zl, output_flux_at_zi
+        real, dimension(:), allocatable :: z_l
+        real, dimension(16) :: l1_output, l2_output, l3_output
         integer :: zz, i
         real(8) :: mask_Tuv
 
@@ -312,12 +312,12 @@ contains
         type(ocean_oda_ml_config), pointer, intent(in) :: ml_config
 
         ! character(len=*), intent(in) :: filename
-        ! real(8), dimension(16,51), intent(out) :: l1_weight
-        ! real(8), dimension(16,16), intent(out) :: l2_weight, l3_weight
-        ! real(8), dimension(16), intent(out) :: l1_bias, l2_bias, l3_bias
+        ! real, dimension(16,51), intent(out) :: l1_weight
+        ! real, dimension(16,16), intent(out) :: l2_weight, l3_weight
+        ! real, dimension(16), intent(out) :: l1_bias, l2_bias, l3_bias
 
-        real(8), dimension(51,16)  :: l1_weight_temp
-        real(8), dimension(16,16) :: l2_weight_temp, l3_weight_temp
+        real, dimension(51,16)  :: l1_weight_temp
+        real, dimension(16,16) :: l2_weight_temp, l3_weight_temp
         integer :: ncid, varid, retval
         character(len = 255) :: varname
 
@@ -423,20 +423,19 @@ contains
     ! 1D linear interpolation; it is guaranteed that x1 <= thisx < x2
     subroutine interpolate(x1,x2,y1,y2,thisx,thisy)
         implicit none
-        real(8), intent(in) :: x1, x2, y1, y2, thisx
-        real(8), intent(out) :: thisy
+        real, intent(in) :: x1, x2, y1, y2, thisx
+        real, intent(out) :: thisy
         thisy = (thisx-x1)/(x2-x1)*(y2-y1) + y1
     end subroutine interpolate
-
 
 
     ! Subroutine to find the index. 1D array (index) is greater than the given value
     Subroutine find_right_index(array1d_for_indexing, value_for_indexing, bathy_for_control, array1d_for_depth, right_index)
         implicit none
-        real(8), intent(in) :: array1d_for_indexing(:), array1d_for_depth(:)
+        real, intent(in) :: array1d_for_indexing(:), array1d_for_depth(:)
         integer :: array1d_i
         integer, intent(out) :: right_index
-        real(8), intent(in) :: value_for_indexing, bathy_for_control
+        real, intent(in) :: value_for_indexing, bathy_for_control
         right_index = 0 ! if there's so such right index, it will be 0 
         do array1d_i = 1, size(array1d_for_indexing)
             if (array1d_for_depth(array1d_i) > bathy_for_control) then
@@ -467,13 +466,11 @@ contains
     ! Subroutine to compute divergence
     Subroutine compute_current_divergence(uy_left, uy_right, vx_south, vy_north, area, div)
         implicit none
-        real(8), intent(in) :: uy_left, uy_right, vx_south, vy_north, area
-        real(8), intent(out) :: div
+        real, intent(in) :: uy_left, uy_right, vx_south, vy_north, area
+        real, intent(out) :: div
 
         div = (uy_right - uy_left + vy_north - vx_south) / area
 
     end subroutine compute_current_divergence
-
-
 
 end module MOM_oda_ml_mod
