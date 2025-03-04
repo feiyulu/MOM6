@@ -149,7 +149,8 @@ type, public :: ODA_CS ; private
   integer, pointer, dimension(:,:) :: ensemble_pelist !< PE list for ensemble members
   integer, pointer, dimension(:) :: filter_pelist !< PE list for ensemble members
   real :: assim_interval !< analysis interval [ T ~> s]
-  real :: prior_interval !< analysis interval [ T ~> s]
+  real :: prior_interval !< prior accumulation interval [ T ~> s]
+  real :: apply_interval !< apply increments interval [ T ~> s]
   ! Profiles local to the analysis domain
   type(ocean_profile_type), pointer :: Profiles => NULL() !< pointer to linked list of all available profiles
   type(ocean_profile_type), pointer :: CProfiles => NULL()!< pointer to linked list of current profiles
@@ -160,12 +161,16 @@ type, public :: ODA_CS ; private
   type(remapping_CS) :: remapCS !< ALE control structure for remapping
   type(time_type) :: Time !< Current Analysis time
   type(time_type) :: Prior_Time !< Current Prior time for time averaging
+  type(time_type) :: Apply_Time !< Current Prior time for time averaging
   type(diag_ctrl), pointer :: diag_cs=> NULL() !<Pointer to diagnostics control structure
   type(INC_CS) :: INC_CS !< A Structure containing integer file handles for bias adjustment
-  integer :: id_inc_t !< A diagnostic handle for the temperature climatological adjustment
-  integer :: id_inc_s !< A diagnostic handle for the salinity climatological adjustment
-  ! integer :: id_inc_ml_t !< A diagnostic handle for the temperature climatological adjustment
-  ! integer :: id_inc_ml_s !< A diagnostic handle for the salinity climatological adjustment
+  integer :: id_inc_t = -1 !< A diagnostic handle for the temperature climatological adjustment
+  integer :: id_inc_s = -1 !< A diagnostic handle for the salinity climatological adjustment
+  integer :: id_inc_ml_t = -1 !< A diagnostic handle for the temperature climatological adjustment
+  integer :: id_inc_ml_s = -1 !< A diagnostic handle for the salinity climatological adjustment
+  integer :: id_prior_t = -1, id_prior_s = -1, id_prior_u = -1, id_prior_v = -1
+  integer :: id_prior_ssh = -1, id_prior_taux = -1, id_prior_tauy = -1
+  integer :: id_prior_sw = -1, id_prior_lw = -1, id_prior_latent = -1, id_prior_sensible = -1
   integer :: answer_date    !< The vintage of the order of arithmetic and expressions in the
                             !! remapping invoked by the ODA driver.  Values below 20190101 recover
                             !! the answers from the end of 2018, while higher values use updated
@@ -238,6 +243,8 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
        "data assimilation update interval in hours",default=-1.0,units="hours",scale=3600.*US%s_to_T)
   call get_param(PF, mdl, "PRIOR_INTERVAL", CS%prior_interval,  &
        "prior averaging interval in hours",default=2.0,units="hours",scale=3600.*US%s_to_T)
+  call get_param(PF, mdl, "APPLY_INTERVAL", CS%apply_interval,  &
+       "increment application interval in hours",default=2.0,units="hours",scale=3600.*US%s_to_T)  
   if (CS%assim_interval < 0.) then
      call get_param(PF, mdl, "ASSIM_FREQUENCY", CS%assim_interval,  &
           "data assimilation update  in hours. This parameter name will \n"//&
@@ -285,16 +292,12 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
        "If true, add a machine learning-trained adjustment "//&
        "to salinity.", &
        default=.false.)
-  if (CS%do_T_ml_bias_adjustment) then
-    call get_param(PF, mdl, "ML_TEMP_ADJUSTMENT_FACTOR", CS%T_ml_bias_adjustment_multiplier, &
-       "A multiplicative scaling factor for the machine learning tracer tendency adjustment ", &
-       units="nondim", default=0.0)
-  endif
-  if (CS%do_S_ml_bias_adjustment) then
-    call get_param(PF, mdl, "ML_SALT_ADJUSTMENT_FACTOR", CS%S_ml_bias_adjustment_multiplier, &
-       "A multiplicative scaling factor for the machine learning tracer tendency adjustment ", &
-       units="nondim", default=0.0)
-  endif
+  call get_param(PF, mdl, "ML_TEMP_ADJUSTMENT_FACTOR", CS%T_ml_bias_adjustment_multiplier, &
+      "A multiplicative scaling factor for the machine learning tracer tendency adjustment ", &
+      units="nondim", default=0.0)
+  call get_param(PF, mdl, "ML_SALT_ADJUSTMENT_FACTOR", CS%S_ml_bias_adjustment_multiplier, &
+      "A multiplicative scaling factor for the machine learning tracer tendency adjustment ", &
+      units="nondim", default=0.0)
   write(mesg,*) 'ML adjustment multiplier', CS%T_ml_bias_adjustment_multiplier, CS%S_ml_bias_adjustment_multiplier
   call MOM_mesg("ODA init: "//trim(mesg))
   call get_param(PF, mdl, "USE_BASIN_MASK", CS%use_basin_mask, &
@@ -397,6 +400,7 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
   allocate(CS%oda_grid)
   CS%oda_grid%x => CS%Grid%geolonT
   CS%oda_grid%y => CS%Grid%geolatT
+  CS%oda_grid%bathyT => CS%Grid%bathyT
 
   if (CS%use_basin_mask) then
     call get_param(PF, 'oda_driver', "BASIN_FILE", basin_file, &
@@ -412,10 +416,38 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
 
   ! set up diag variables for analysis increments
   CS%diag_CS => diag_CS
+
   CS%id_inc_t = register_diag_field('ocean_model', 'temp_increment', diag_CS%axesTL, &
-       Time, 'ocean potential temperature increments', 'degC', conversion=US%C_to_degC)
+      Time, 'Ocean potential temperature increments', 'degC', conversion=US%C_to_degC)
   CS%id_inc_s = register_diag_field('ocean_model', 'salt_increment', diag_CS%axesTL, &
-       Time, 'ocean salinity increments', 'psu', conversion=US%S_to_ppt)
+      Time, 'Ocean salinity increments', 'psu', conversion=US%S_to_ppt)
+
+  CS%id_prior_t = register_diag_field('ocean_model', 'thetao_prior', diag_CS%axesTL, &
+      Time, 'Accumulated ocean potential temperature for DA/ML', 'degC', conversion=US%C_to_degC)
+  CS%id_prior_s = register_diag_field('ocean_model', 'so_prior', diag_CS%axesTL, &
+      Time, 'Accumulated ocean salinity for DA/ML', 'psu', conversion=US%S_to_ppt)
+  CS%id_prior_ssh = register_diag_field('ocean_model', 'SSH_prior', diag_CS%axesT1, &
+      Time, 'Accumulated Sea Surface Height for DA/ML', 'm', conversion=US%Z_to_m)
+
+  CS%id_prior_u = register_diag_field('ocean_model', 'uo_prior', diag_CS%axesCuL, &
+    Time, 'Accumulated ocean zonal velocity for DA/ML', 'm s-1', conversion=US%L_T_to_m_s)
+  CS%id_prior_v = register_diag_field('ocean_model', 'vo_prior', diag_CS%axesCvL, &
+    Time, 'Accumulated ocean meridional velocity for DA/ML', 'm s-1', conversion=US%L_T_to_m_s)
+
+  CS%id_prior_taux = register_diag_field('ocean_model', 'taux_prior', diag_CS%axesCu1, &
+    Time, 'Accumulated zonal surface stress for DA/ML', 'Pa', conversion=US%RLZ_T2_to_Pa)
+  CS%id_prior_tauy = register_diag_field('ocean_model', 'tauy_prior', diag_CS%axesCv1, &
+    Time, 'Accumulated meridional surface stress for DA/ML', 'Pa', conversion=US%RLZ_T2_to_Pa)
+
+  CS%id_prior_sw = register_diag_field('ocean_model', 'SW_prior', diag_CS%axesT1, &
+    Time, 'Accumulated shortwave radiation flux into ocean for DA/ML', 'W m-2', conversion=US%QRZ_T_to_W_m2)
+  CS%id_prior_lw = register_diag_field('ocean_model', 'LW_prior', diag_CS%axesT1, &
+    Time, 'Accumulated longwave radiation flux into ocean for DA/ML', 'W m-2', conversion=US%QRZ_T_to_W_m2)
+
+  CS%id_prior_latent = register_diag_field('ocean_model', 'latent_prior', diag_CS%axesT1, &
+    Time, 'Accumulated latent heat flux into ocean for DA/ML', 'W m-2', conversion=US%QRZ_T_to_W_m2)
+  CS%id_prior_sensible = register_diag_field('ocean_model', 'sensible_prior', diag_CS%axesT1, &
+    Time, 'Accumulated sensible heat flux into ocean for DA/ML', 'W m-2', conversion=US%QRZ_T_to_W_m2)
 
   ! isd = G%isd; ied = G%ied; jsd = G%jsd; jed = G%jed
 
@@ -433,6 +465,7 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
   deallocate(T_grid)
   CS%Time = Time
   CS%Prior_Time = Time
+  CS%Apply_Time = Time
   
   !! switch back to ensemble member pelist
   call set_PElist(CS%ensemble_pelist(CS%ensemble_id,:))
@@ -468,11 +501,11 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
     allocate(CS%ml_data)
     allocate(CS%ml_config)
     call oda_ml_init(CS%ml_config, CS%ml_data, CS%GV)
-    
-    ! CS%id_inc_ml_t = register_diag_field('ocean_model', 'temp_ml_increment', diag_CS%axesTL, &
-    !   Time, 'ocean potential temperature increments predicted by ML', 'degC', conversion=US%C_to_degC)
-    ! CS%id_inc_ml_s = register_diag_field('ocean_model', 'salt_ml_increment', diag_CS%axesTL, &
-    !   Time, 'ocean salinity increments predicted by ML', 'psu', conversion=US%S_to_ppt)
+
+    CS%id_inc_ml_t = register_diag_field('ocean_model', 'temp_ml_increment', diag_CS%axesTL, &
+      Time, 'Ocean potential temperature increments predicted by ML', 'degC', conversion=US%C_to_degC)
+    CS%id_inc_ml_s = register_diag_field('ocean_model', 'salt_ml_increment', diag_CS%axesTL, &
+      Time, 'Ocean salinity increments predicted by ML', 'psu', conversion=US%S_to_ppt)
 
     allocate(CS%T_ml_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
     allocate(CS%S_ml_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
@@ -584,18 +617,41 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, model_u, model_v, model_ssh, flu
 
   CS%prior_ave_counter = CS%prior_ave_counter + 1.0
 
+  call get_date(CS%Prior_Time, yr, mon, day, hr, min, sec)
+  write(mesg,*) 'Count: ', INT(CS%prior_ave_counter),' Prior Time: ', yr, mon, day, hr, min, sec
+  call MOM_mesg("ODA get_prior: "//trim(mesg))
+  
   if (Time >= CS%Prior_Time) then
     ! increment the analysis time to the next step
     CS%Prior_Time = CS%Prior_Time + real_to_time(CS%US%T_to_s*(CS%prior_interval))
-    call get_date(Time, yr, mon, day, hr, min, sec)
-    write(mesg,*) 'Count:', CS%prior_ave_counter,'Model Time: ', yr, mon, day, hr, min, sec
-    call MOM_mesg("ODA get_prior: "//trim(mesg))
   endif
   if (CS%Prior_Time < Time) then
     call MOM_error(FATAL, " set_prior_time: " // &
          "prior averaging interval appears to be shorter than " // &
          "the model timestep")
   endif
+
+  call enable_averaging(CS%prior_interval, CS%Prior_Time, CS%diag_CS)
+
+  if (CS%id_prior_t > 0) call post_data(CS%id_prior_t, tv%T, CS%diag_CS)
+  if (CS%id_prior_s > 0) call post_data(CS%id_prior_s, tv%S, CS%diag_CS)
+  if (CS%id_prior_u > 0) call post_data(CS%id_prior_u, model_u, CS%diag_CS)
+  if (CS%id_prior_v > 0) call post_data(CS%id_prior_v, model_v, CS%diag_CS)
+  if (CS%id_prior_ssh > 0) call post_data(CS%id_prior_ssh, model_ssh, CS%diag_CS)
+  if (CS%id_prior_taux > 0) call post_data(CS%id_prior_taux, forces%taux, CS%diag_CS)
+  if (CS%id_prior_tauy > 0) call post_data(CS%id_prior_tauy, forces%tauy, CS%diag_CS)
+  if (CS%id_prior_latent > 0) call post_data(CS%id_prior_latent, fluxes%latent, CS%diag_CS)
+  if (CS%id_prior_sensible > 0) call post_data(CS%id_prior_sensible, fluxes%sens, CS%diag_CS)
+  if (CS%id_prior_lw > 0) call post_data(CS%id_prior_lw, fluxes%lw, CS%diag_CS)
+  if (CS%id_prior_sw > 0) call post_data(CS%id_prior_sw, fluxes%sw, CS%diag_CS)
+  
+  call disable_averaging(CS%diag_CS)
+  ! call diag_update_remap_grids(CS%diag_CS)
+
+  ! call enable_averaging(CS%prior_interval, CS%Prior_Time, CS%diag_CS)
+  ! if (CS%id_prior_t > 0) call post_data(CS%id_prior_t, T, CS%diag_CS)
+  ! if (CS%id_prior_s > 0) call post_data(CS%id_prior_s, S, CS%diag_CS)
+  ! call disable_averaging(CS%diag_CS)
 
   call cpu_clock_end(id_clock_get_prior)
   
@@ -612,7 +668,7 @@ subroutine get_posterior_tracer(Time, CS, increment)
 
   integer :: m
   logical :: get_inc
-
+  type(time_type) :: Time_Next
 
   ! return if not analysis time (retain pointers for h and tv)
   if (Time < CS%Time .or. CS%assim_method == NO_ASSIM) return
@@ -656,6 +712,11 @@ subroutine get_posterior_tracer(Time, CS, increment)
   CS%T_tend = CS%T_tend / (CS%assim_interval)
   CS%S_tend = CS%S_tend / (CS%assim_interval)
 
+  ! Time_Next = CS%Time + real_to_time(CS%US%T_to_s*(CS%assim_interval))
+  ! call enable_averaging(CS%assim_interval, Time_Next, CS%diag_CS)
+  ! if (CS%id_inc_t > 0) call post_data(CS%id_inc_t, CS%T_tend, CS%diag_CS)
+  ! if (CS%id_inc_s > 0) call post_data(CS%id_inc_s, CS%S_tend, CS%diag_CS)
+  ! call disable_averaging(CS%diag_CS)
 
 end subroutine get_posterior_tracer
 
@@ -674,7 +735,7 @@ subroutine oda(Time, CS)
     call cpu_clock_begin(id_clock_ensemble_filter)
 
     call get_date(Time, yr, mon, day, hr, min, sec)
-    write(mesg,*) 'Count:', CS%prior_ave_counter,'Model Time: ', yr, mon, day, hr, min, sec
+    write(mesg,*) 'Count: ', INT(CS%prior_ave_counter),' Model Time: ', yr, mon, day, hr, min, sec
     call MOM_mesg("ODA averaging prior: "//trim(mesg))
 
     CS%Ocean_background_ave%T = CS%Ocean_background_ave%T / (CS%prior_ave_counter)
@@ -792,8 +853,8 @@ subroutine get_bias_correction_tracer(Time, US, CS)
       do k=1,fld_sz(3)
 ! The following two lines are needed for backward compatibility (ANSWER_DATE< 20181231) 
 ! Need to discuss if we need to use the valid_flag instead.
-        if (T_bias(i,j,k) > 1.0E-3*US%degC_to_C) T_bias(i,j,k) = 0.0
-        if (S_bias(i,j,k) > 1.0E-3*US%ppt_to_S) S_bias(i,j,k) = 0.0
+        if (ABS(T_bias(i,j,k)) > 1.0E-3*US%degC_to_C) T_bias(i,j,k) = 0.0
+        if (ABS(S_bias(i,j,k)) > 1.0E-3*US%ppt_to_S) S_bias(i,j,k) = 0.0
 !        if (valid_flag(i,j,k)==0.) then
 !          T_bias(i,j,k)=0.0
 !          S_bias(i,j,k)=0.0
@@ -819,7 +880,7 @@ subroutine get_ML_bias_correction(Time, US, CS)
 
   ! Local variables
   integer :: isd, ied, jsd, jed
-  integer :: i,j
+  integer :: i,j,k
 
   call cpu_clock_begin(id_clock_ml_bias_correction)
 
@@ -853,12 +914,30 @@ subroutine get_ML_bias_correction(Time, US, CS)
       CS%ml_data%dxCv_north = CS%model_G%dxCv(i,j)
       CS%ml_data%dxCv_south = CS%model_G%dxCv(i,j-1)
       CS%ml_data%areacello = CS%model_G%areaT(i,j)
+      
+      CS%ml_data%bathyT = CS%model_G%bathyT(i,j)
+      CS%ml_data%bathyU_left = (CS%model_G%bathyT(i-1,j)+CS%model_G%bathyT(i,j))/2
+      CS%ml_data%bathyU_right = (CS%model_G%bathyT(i,j)+CS%model_G%bathyT(i+1,j))/2
+      CS%ml_data%bathyV_south = (CS%model_G%bathyT(i,j-1)+CS%model_G%bathyT(i,j))/2
+      CS%ml_data%bathyV_north = (CS%model_G%bathyT(i,j)+CS%model_G%bathyT(i,j+1))/2
+
+      CS%ml_data%mask2dT = CS%model_G%mask2dT(i,j)
+      CS%ml_data%mask2dCu_left = CS%model_G%mask2dCu(i-1,j)
+      CS%ml_data%mask2dCu_right = CS%model_G%mask2dCu(i,j)
+      CS%ml_data%mask2dCv_south = CS%model_G%mask2dCv(i,j-1)
+      CS%ml_data%mask2dCv_north = CS%model_G%mask2dCu(i,j)
 
       !! Call inference subroutine with the concatenated vector
       call oda_ml_inference(CS%ml_config, CS%ml_data)
 
       CS%T_ml_tend(i,j,:) = CS%ml_data%T_inc * CS%T_ml_bias_adjustment_multiplier
       CS%S_ml_tend(i,j,:) = CS%ml_data%S_inc * CS%S_ml_bias_adjustment_multiplier
+
+      do k=1,CS%nk
+        if (CS%T_ml_tend(i,j,k) > 1.0E-5*US%degC_to_C) CS%T_ml_tend(i,j,k) = 1.0E-5
+        if (CS%T_ml_tend(i,j,k) < -1.0E-5*US%degC_to_C) CS%T_ml_tend(i,j,k) = -1.0E-5
+      enddo
+
     endif
   enddo; enddo
 
@@ -963,11 +1042,11 @@ subroutine set_analysis_time(Time,CS)
 
 end subroutine set_analysis_time
 
-
 !> Apply increments to tracers
-subroutine apply_oda_tracer_increments(dt, Time_end, G, GV, tv, h, CS)
-  real,                     intent(in)    :: dt !< The tracer timestep [T ~> s]
-  type(time_type), intent(in)             :: Time_end !< Time at the end of the interval
+subroutine apply_oda_tracer_increments(Time, G, GV, tv, h, CS)
+  ! real,                     intent(in)    :: dt !< The tracer timestep [T ~> s]
+  ! type(time_type), intent(in)             :: Time_end !< Time at the end of the interval
+  type(time_type), intent(in)             :: Time !< Time at the end of the interval
   type(ocean_grid_type),    intent(in)    :: G  !< ocean grid structure
   type(verticalGrid_type),  intent(in)    :: GV !< The ocean's vertical grid structure
   type(thermo_var_ptrs),    intent(inout) :: tv !< A structure pointing to various thermodynamic variables
@@ -982,17 +1061,28 @@ subroutine apply_oda_tracer_increments(dt, Time_end, G, GV, tv, h, CS)
                                                     !! tendency [C T-1 -> degC s-1]
   real, dimension(SZI_(G),SZJ_(G),SZK_(G)) :: S_tend_inc !< an adjustment to the salinity
                                                     !! tendency [S T-1 -> ppt s-1]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(G)) :: T_ml_tend_inc !< an adjustment to the temperature
+                                                    !! tendency [C T-1 -> degC s-1]
+  real, dimension(SZI_(G),SZJ_(G),SZK_(G)) :: S_ml_tend_inc !< an adjustment to the salinity
+                                                    !! tendency [S T-1 -> ppt s-1]
   real, dimension(SZI_(G),SZJ_(G),SZK_(CS%Grid)) :: T_tend !< The temperature tendency adjustment from
                                                            !! DA [C T-1 ~> degC s-1]
   real, dimension(SZI_(G),SZJ_(G),SZK_(CS%Grid)) :: S_tend !< The salinity tendency adjustment from DA
                                                           !! [S T-1 ~> ppt s-1]
   real :: h_neglect, h_neglect_edge                 ! small thicknesses [H ~> m or kg m-2]
+  character(len=160) :: mesg  ! The text of an error message
+  integer :: yr, mon, day, hr, min, sec
 
   if (.not. associated(CS)) return
+  if (Time < CS%Apply_Time) return
   if (CS%assim_method == NO_ASSIM .and. (.not. CS%do_T_bias_adjustment) .and. (.not. CS%do_S_bias_adjustment) &
     .and. (.not. CS%do_T_ml_bias_adjustment) .and. (.not. CS%do_S_ml_bias_adjustment)) return
 
   call cpu_clock_begin(id_clock_apply_increments)
+
+  call get_date(CS%Apply_Time, yr, mon, day, hr, min, sec)
+  write(mesg,*) 'apply_int: ', INT(CS%apply_interval),' Apply Time: ', yr, mon, day, hr, min, sec
+  call MOM_mesg("ODA applying increments: "//trim(mesg))
 
   T_tend_inc(:,:,:) = 0.0; S_tend_inc(:,:,:) = 0.0; T_tend(:,:,:) = 0.0; S_tend(:,:,:) = 0.0
   if (.NOT. CS%assim_method == NO_ASSIM) then
@@ -1028,22 +1118,43 @@ subroutine apply_oda_tracer_increments(dt, Time_end, G, GV, tv, h, CS)
          G%ke, h(i,j,:), S_tend_inc(i,j,:), h_neglect, h_neglect_edge)
   enddo; enddo
 
-
   call pass_var(T_tend_inc, G%Domain)
   call pass_var(S_tend_inc, G%Domain)
 
-  tv%T(isc:iec,jsc:jec,:) = tv%T(isc:iec,jsc:jec,:) + T_tend_inc(isc:iec,jsc:jec,:)*dt
-  tv%S(isc:iec,jsc:jec,:) = tv%S(isc:iec,jsc:jec,:) + S_tend_inc(isc:iec,jsc:jec,:)*dt
+  do j=jsc,jec; do i=isc,iec
+    call remapping_core_h(CS%remapCS, CS%nk, CS%h(i,j,:), CS%T_ml_tend(i,j,:), &
+         G%ke, h(i,j,:), T_ml_tend_inc(i,j,:), h_neglect, h_neglect_edge)
+    call remapping_core_h(CS%remapCS, CS%nk, CS%h(i,j,:), CS%S_ml_tend(i,j,:), &
+         G%ke, h(i,j,:), S_ml_tend_inc(i,j,:), h_neglect, h_neglect_edge)
+  enddo; enddo
+  call pass_var(T_ml_tend_inc, G%Domain)
+  call pass_var(S_ml_tend_inc, G%Domain)
+
+  tv%T(isc:iec,jsc:jec,:) = tv%T(isc:iec,jsc:jec,:) + T_tend_inc(isc:iec,jsc:jec,:)*CS%apply_interval
+  tv%S(isc:iec,jsc:jec,:) = tv%S(isc:iec,jsc:jec,:) + S_tend_inc(isc:iec,jsc:jec,:)*CS%apply_interval
 
   call pass_var(tv%T, G%Domain)
   call pass_var(tv%S, G%Domain)
 
-  call enable_averaging(dt, Time_end, CS%diag_CS)
+  if (Time >= CS%Apply_Time) then
+    ! increment the analysis time to the next step
+    CS%Apply_Time = CS%Apply_Time + real_to_time(CS%US%T_to_s*(CS%apply_interval))
+  endif
+  if (CS%Apply_Time < Time) then
+    call MOM_error(FATAL, " set_apply_time: " // &
+         "increment application interval appears to be shorter than " // &
+         "the model timestep")
+  endif
+
+  call enable_averaging(CS%apply_interval, CS%Apply_Time, CS%diag_CS)
   if (CS%id_inc_t > 0) call post_data(CS%id_inc_t, T_tend_inc, CS%diag_CS)
   if (CS%id_inc_s > 0) call post_data(CS%id_inc_s, S_tend_inc, CS%diag_CS)
+  if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
+    if (CS%id_inc_ml_t > 0) call post_data(CS%id_inc_ml_t, T_ml_tend_inc, CS%diag_CS)
+    if (CS%id_inc_ml_s > 0) call post_data(CS%id_inc_ml_s, S_ml_tend_inc, CS%diag_CS)
+  endif
   call disable_averaging(CS%diag_CS)
 
-  call diag_update_remap_grids(CS%diag_CS)
   call cpu_clock_end(id_clock_apply_increments)
 
 end subroutine apply_oda_tracer_increments
