@@ -229,19 +229,19 @@ contains
                     ! l3_output is the predicted flux
                     output_DT_sigmas =  (l3_output(1:15)-l3_output(2:16))/(0.2*mld_depth)
                     
-                    allocate(output_flux_at_zi(zl_index_3mld+1))
-                    output_flux_at_zi(1) = l3_output(1)
-                    do zz = 1, zl_index_3mld
-                        call find_right_index_clean(output_flux_sigmas, zi_to_sigma(zz), right_index)
-                        if (right_index == 0) then
-                            output_flux_at_zi(zz+1) = 0.0
+                    !allocate(output_flux_at_zi(zl_index_3mld+1))
+                    !output_flux_at_zi(1) = l3_output(1)
+                    !do zz = 1, zl_index_3mld
+                        !call find_right_index_clean(output_flux_sigmas, zi_to_sigma(zz), right_index)
+                        !if (right_index == 0) then
+                            !output_flux_at_zi(zz+1) = 0.0
                         ! it is known that right_index > 1
-                        else
-                            call interpolate(output_flux_sigmas(right_index-1),output_flux_sigmas(right_index),l3_output(right_index-1),&
-                                    l3_output(right_index),zi_to_sigma(zz),output_flux_at_zi(zz+1))
+                        !else
+                            !call interpolate(output_flux_sigmas(right_index-1),output_flux_sigmas(right_index),l3_output(right_index-1),&
+                                    !l3_output(right_index),zi_to_sigma(zz),output_flux_at_zi(zz+1))
                     
-                        end if       
-                    end do
+                        !end if       
+                    !end do
                 
                     allocate(output_DT_at_zl(zl_index_3mld))
                     do zz = 1, zl_index_3mld
