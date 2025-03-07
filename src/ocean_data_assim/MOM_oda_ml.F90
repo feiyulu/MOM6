@@ -190,7 +190,7 @@ contains
                         ! quality control done in the previous steps, so that right_index >=1 and right_index <= zl_index_3mld
                         if (right_index == 1) then
                             thetao_zgrad_sigma(i) = thetao_zgrad_profile(1)
-                            so_zgrad_sigma(i) = so_zgrad_profile(1)
+                            !so_zgrad_sigma(i) = so_zgrad_profile(1)
                             PRHO_zgrad_sigma(i) = PRHO_zgrad_profile(1)
                         else
                             call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),thetao_zgrad_profile(right_index-1), &
