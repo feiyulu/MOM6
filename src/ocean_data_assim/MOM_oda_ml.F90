@@ -153,22 +153,22 @@ contains
 
                     zi_to_sigma = ml_config%z_i(2:zl_index_3mld + 1)/mld_depth
                     allocate(thetao_zgrad_profile(zl_index_3mld),source=0.0)
-                    allocate(so_zgrad_profile(zl_index_3mld),source=0.0)
+                    !allocate(so_zgrad_profile(zl_index_3mld),source=0.0)
                     allocate(PRHO_zgrad_profile(zl_index_3mld),source=0.0)
 
                     do zz = 1, zl_index_3mld
                         thetao_top = ml_data%T(zz)
-                        so_top = ml_data%S(zz)
+                        !so_top = ml_data%S(zz)
                         CT = gsw_ct_from_pt(so_top,thetao_top)
                         PRHO_top = gsw_sigma0(so_top,CT)
                     
                         thetao_bottom = ml_data%T(zz+1)
-                        so_bottom = ml_data%S(zz+1)
+                        !so_bottom = ml_data%S(zz+1)
                         CT = gsw_ct_from_pt(so_bottom,thetao_bottom)
                         PRHO_bottom = gsw_sigma0(so_bottom,CT)
 
                         thetao_zgrad_profile(zz) = (thetao_top - thetao_bottom)/(z_l(zz+1) - z_l(zz))
-                        so_zgrad_profile(zz) = (so_top - so_bottom)/(z_l(zz+1) - z_l(zz))
+                        !so_zgrad_profile(zz) = (so_top - so_bottom)/(z_l(zz+1) - z_l(zz))
                         PRHO_zgrad_profile(zz) = (PRHO_top - PRHO_bottom)/(z_l(zz+1) - z_l(zz))
                     end do
 
@@ -195,8 +195,8 @@ contains
                         else
                             call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),thetao_zgrad_profile(right_index-1), &
                                     thetao_zgrad_profile(right_index),target_sigmas(i),thetao_zgrad_sigma(i))
-                            call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),so_zgrad_profile(right_index-1), &
-                                    so_zgrad_profile(right_index),target_sigmas(i),so_zgrad_sigma(i))
+                            !call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),so_zgrad_profile(right_index-1), &
+                                    !so_zgrad_profile(right_index),target_sigmas(i),so_zgrad_sigma(i))
                             call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),PRHO_zgrad_profile(right_index-1), &
                                     PRHO_zgrad_profile(right_index),target_sigmas(i),PRHO_zgrad_sigma(i))
                         end if
