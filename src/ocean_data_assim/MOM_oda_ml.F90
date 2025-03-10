@@ -322,11 +322,11 @@ contains
         type(ocean_oda_ml_config), pointer, intent(in) :: ml_config
 
         ! character(len=*), intent(in) :: filename
-        ! real, dimension(16,51), intent(out) :: l1_weight
+        ! real, dimension(16,66), intent(out) :: l1_weight
         ! real, dimension(16,16), intent(out) :: l2_weight, l3_weight
         ! real, dimension(16), intent(out) :: l1_bias, l2_bias, l3_bias
 
-        real, dimension(51,16)  :: l1_weight_temp
+        real, dimension(66,16)  :: l1_weight_temp
         real, dimension(16,16) :: l2_weight_temp, l3_weight_temp
         integer :: ncid, varid, retval
         character(len = 255) :: varname
