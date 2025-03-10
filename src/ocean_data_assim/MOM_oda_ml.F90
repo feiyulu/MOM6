@@ -86,14 +86,15 @@ contains
         real, dimension(:), allocatable :: zl_to_sigma, zi_to_sigma
         real :: thetao, so, uo_left, uo_right, vo_south, vo_north, div, thetao_top, thetao_bottom, so_top,so_bottom
         real :: so_zgrad,thetao_zgrad, PRHO_top, PRHO_bottom, PRHO_zgrad
-        real, dimension(15) :: thetao_zgrad_sigma, so_zgrad_sigma, PRHO_zgrad_sigma, div_sigma, output_DT_sigmas
-        real, dimension(:), allocatable :: thetao_zgrad_profile, so_zgrad_profile, div_profile, PRHO_zgrad_profile
-        real, dimension(51) :: ANN_input
+        real :: uo_zgrad, uo_right_top, uo_right_bottom, uo_left_top, uo_left_bottom
+        real, dimension(15) :: thetao_zgrad_sigma, so_zgrad_sigma, PRHO_zgrad_sigma, div_sigma, output_DT_sigmas, uo_zgrad_sigma
+        real, dimension(:), allocatable :: thetao_zgrad_profile, so_zgrad_profile, div_profile, PRHO_zgrad_profile, uo_zgrad_profile
+        real, dimension(66) :: ANN_input
         real, dimension(:), allocatable :: output_DT_at_zl, output_flux_at_zi
         real, dimension(:), allocatable :: z_l
         real, dimension(16) :: l1_output, l2_output, l3_output
         integer :: zz, i
-        real(8) :: mask_Tuv
+        real :: mask_Tuv
 
         mask_Tuv = ml_data%mask2dT + ml_data%OBCmask2dCu_left + ml_data%OBCmask2dCu_right + ml_data%OBCmask2dCv_south + ml_data%OBCmask2dCv_north
         if (mask_Tuv < 5.0) then
@@ -144,8 +145,8 @@ contains
                 ml_data%T_inc=0.0
             else
                 if (z_l(zl_index_3mld+1) > ml_data%bathyT .OR. &
-                    z_l(zl_index_3mld) > ml_data%bathyU_left .OR. &
-                    z_l(zl_index_3mld) > ml_data%bathyU_right .OR. &
+                    z_l(zl_index_3mld+1) > ml_data%bathyU_left .OR. &
+                    z_l(zl_index_3mld+1) > ml_data%bathyU_right .OR. &
                     z_l(zl_index_3mld) > ml_data%bathyV_south .OR. &
                     z_l(zl_index_3mld) > ml_data%bathyV_north) then
                     ml_data%T_inc=0.0
@@ -155,21 +156,27 @@ contains
                     allocate(thetao_zgrad_profile(zl_index_3mld),source=0.0)
                     !allocate(so_zgrad_profile(zl_index_3mld),source=0.0)
                     allocate(PRHO_zgrad_profile(zl_index_3mld),source=0.0)
+                    allocate(uo_zgrad_profile(zl_index_3mld),source=0.0)
 
                     do zz = 1, zl_index_3mld
                         thetao_top = ml_data%T(zz)
                         !so_top = ml_data%S(zz)
                         CT = gsw_ct_from_pt(so_top,thetao_top)
                         PRHO_top = gsw_sigma0(so_top,CT)
+                        uo_right_top = ml_data%U_right(zz)
+                        uo_left_top = ml_data%U_left(zz)
                     
                         thetao_bottom = ml_data%T(zz+1)
                         !so_bottom = ml_data%S(zz+1)
                         CT = gsw_ct_from_pt(so_bottom,thetao_bottom)
                         PRHO_bottom = gsw_sigma0(so_bottom,CT)
+                        uo_right_bottom = ml_data%U_right(zz+1)
+                        uo_left_bottom = ml_data%U_left(zz+1)
 
                         thetao_zgrad_profile(zz) = (thetao_top - thetao_bottom)/(z_l(zz+1) - z_l(zz))
                         !so_zgrad_profile(zz) = (so_top - so_bottom)/(z_l(zz+1) - z_l(zz))
                         PRHO_zgrad_profile(zz) = (PRHO_top - PRHO_bottom)/(z_l(zz+1) - z_l(zz))
+                        uo_zgrad_profile(zz) = (uo_right_top-uo_right_bottom+uo_left_top-uo_left_bottom)/(2*(z_l(zz+1) - z_l(zz)))
                     end do
 
                     zl_to_sigma = z_l(1:zl_index_3mld)/mld_depth
@@ -192,6 +199,7 @@ contains
                             thetao_zgrad_sigma(i) = thetao_zgrad_profile(1)
                             !so_zgrad_sigma(i) = so_zgrad_profile(1)
                             PRHO_zgrad_sigma(i) = PRHO_zgrad_profile(1)
+                            uo_zgrad_sigma(i) = uo_zgrad_profile(1)
                         else
                             call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),thetao_zgrad_profile(right_index-1), &
                                     thetao_zgrad_profile(right_index),target_sigmas(i),thetao_zgrad_sigma(i))
@@ -199,6 +207,8 @@ contains
                                     !so_zgrad_profile(right_index),target_sigmas(i),so_zgrad_sigma(i))
                             call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),PRHO_zgrad_profile(right_index-1), &
                                     PRHO_zgrad_profile(right_index),target_sigmas(i),PRHO_zgrad_sigma(i))
+                            call interpolate(zi_to_sigma(right_index-1),zi_to_sigma(right_index),uo_zgrad_profile(right_index-1), &
+                                    uo_zgrad_profile(right_index),target_sigmas(i),uo_zgrad_sigma(i))
                         end if
 
                         call find_right_index_clean(zl_to_sigma, target_sigmas(i), right_index)
@@ -221,6 +231,7 @@ contains
                     ANN_input(49) = ml_data%sensible*0.1
                     ANN_input(50) = ml_data%lw*0.1
                     ANN_input(51) = ml_data%sw*0.1
+                    ANN_input(52:66) = uo_zgrad_sigma*1000
 
                     l1_output = max(ReLU_zero, matmul(ml_config%l1_weight, ANN_input) + ml_config%l1_bias)
                     l2_output = max(ReLU_zero, matmul(ml_config%l2_weight, l1_output) + ml_config%l2_bias)
