@@ -85,8 +85,7 @@ contains
         integer :: zl_index_mld, zl_index10m, zl_index_3mld, right_index
         real, dimension(:), allocatable :: zl_to_sigma, zi_to_sigma
         real :: thetao, so, uo_left, uo_right, vo_south, vo_north, div, thetao_top, thetao_bottom, so_top,so_bottom
-        real :: so_zgrad,thetao_zgrad, PRHO_top, PRHO_bottom, PRHO_zgrad
-        real :: uo_zgrad, uo_right_top, uo_right_bottom, uo_left_top, uo_left_bottom
+        real :: PRHO_top, PRHO_bottom, uo_right_top, uo_right_bottom, uo_left_top, uo_left_bottom
         real, dimension(15) :: thetao_zgrad_sigma, so_zgrad_sigma, PRHO_zgrad_sigma, div_sigma, output_DT_sigmas, uo_zgrad_sigma
         real, dimension(:), allocatable :: thetao_zgrad_profile, so_zgrad_profile, div_profile, PRHO_zgrad_profile, uo_zgrad_profile
         real, dimension(66) :: ANN_input
