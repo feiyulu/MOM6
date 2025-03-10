@@ -17,7 +17,7 @@ public :: oda_ml_init, oda_ml_end, oda_ml_inference
 ! Data structure to save the ML configuration, input, and output data
 type, public :: ocean_oda_ml_config ; private
     character(len=255)  :: filename
-    real, dimension(16,51)  :: l1_weight
+    real, dimension(16,66)  :: l1_weight
     real, dimension(16,16)  :: l2_weight, l3_weight
     real, dimension(16) :: l1_bias, l2_bias, l3_bias
     real, dimension(:), allocatable :: z_l
