@@ -95,7 +95,7 @@ contains
         integer :: zz, i
         real :: mask_Tuv
 
-        mask_Tuv = ml_data%mask2dT + ml_data%OBCmask2dCu_left + ml_data%OBCmask2dCu_right + ml_data%OBCmask2dCv_south + ml_data%OBCmask2dCv_north
+        mask_Tuv = ml_data%mask2dT + ml_data%OBCmaskCu_left + ml_data%OBCmaskCu_right + ml_data%OBCmaskCv_south + ml_data%OBCmaskCv_north
         if (mask_Tuv < 5.0) then
             ml_data%T_inc=0.0
         else
