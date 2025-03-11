@@ -29,7 +29,7 @@ type, public :: ocean_oda_ml_data
     integer :: nk
     real :: dyCu_left, dyCu_right, dxCv_south, dxCv_north, areacello
     real :: bathyT, bathyU_left, bathyU_right, bathyV_south, bathyV_north
-    real :: mask2dT, OBCmask2dCu_left, OBCmask2dCu_right, OBCmask2dCv_south, OBCmask2dCv_north 
+    real :: mask2dT, OBCmaskCu_left, OBCmaskCu_right, OBCmaskCv_south, OBCmaskCv_north 
     !! Input features
     real :: SSH !<sea surface height (m) across ensembles
     real :: taux_left !<zonal wind stress
