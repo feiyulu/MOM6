@@ -159,14 +159,14 @@ contains
 
                     do zz = 1, zl_index_3mld
                         thetao_top = ml_data%T(zz)
-                        !so_top = ml_data%S(zz)
+                        so_top = ml_data%S(zz)
                         CT = gsw_ct_from_pt(so_top,thetao_top)
                         PRHO_top = gsw_sigma0(so_top,CT)
                         uo_right_top = ml_data%U_right(zz)
                         uo_left_top = ml_data%U_left(zz)
                     
                         thetao_bottom = ml_data%T(zz+1)
-                        !so_bottom = ml_data%S(zz+1)
+                        so_bottom = ml_data%S(zz+1)
                         CT = gsw_ct_from_pt(so_bottom,thetao_bottom)
                         PRHO_bottom = gsw_sigma0(so_bottom,CT)
                         uo_right_bottom = ml_data%U_right(zz+1)
