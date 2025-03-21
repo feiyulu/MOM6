@@ -168,7 +168,12 @@ type, public :: ODA_CS ; private
   integer :: id_inc_s = -1 !< A diagnostic handle for the salinity climatological adjustment
   integer :: id_inc_ml_t = -1 !< A diagnostic handle for the temperature climatological adjustment
   integer :: id_inc_ml_s = -1 !< A diagnostic handle for the salinity climatological adjustment
+  integer :: id_inc_t_z = -1 !< A diagnostic handle for the temperature climatological adjustment
+  integer :: id_inc_s_z = -1 !< A diagnostic handle for the salinity climatological adjustment
+  integer :: id_inc_ml_t_z = -1 !< A diagnostic handle for the temperature climatological adjustment
+  integer :: id_inc_ml_s_z = -1 !< A diagnostic handle for the salinity climatological adjustment
   integer :: id_prior_t = -1, id_prior_s = -1, id_prior_u = -1, id_prior_v = -1
+  integer :: id_prior_t_z = -1, id_prior_s_z = -1, id_prior_u_z = -1, id_prior_v_z = -1
   integer :: id_prior_ssh = -1, id_prior_taux = -1, id_prior_tauy = -1
   integer :: id_prior_sw = -1, id_prior_lw = -1, id_prior_latent = -1, id_prior_sensible = -1
   integer :: answer_date    !< The vintage of the order of arithmetic and expressions in the
@@ -421,6 +426,10 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
       Time, 'Ocean potential temperature increments', 'degC', conversion=US%C_to_degC)
   CS%id_inc_s = register_diag_field('ocean_model', 'salt_increment', diag_CS%axesTL, &
       Time, 'Ocean salinity increments', 'psu', conversion=US%S_to_ppt)
+  CS%id_inc_t_z = register_diag_field('ocean_model', 'temp_increment_z', diag_CS%axesTL, &
+      Time, 'Ocean potential temperature increments', 'degC', conversion=US%C_to_degC)
+  CS%id_inc_s_z = register_diag_field('ocean_model', 'salt_increment_z', diag_CS%axesTL, &
+      Time, 'Ocean salinity increments', 'psu', conversion=US%S_to_ppt)
 
   CS%id_prior_t = register_diag_field('ocean_model', 'thetao_prior', diag_CS%axesTL, &
       Time, 'Accumulated ocean potential temperature for DA/ML', 'degC', conversion=US%C_to_degC)
@@ -432,6 +441,16 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
   CS%id_prior_u = register_diag_field('ocean_model', 'uo_prior', diag_CS%axesCuL, &
     Time, 'Accumulated ocean zonal velocity for DA/ML', 'm s-1', conversion=US%L_T_to_m_s)
   CS%id_prior_v = register_diag_field('ocean_model', 'vo_prior', diag_CS%axesCvL, &
+    Time, 'Accumulated ocean meridional velocity for DA/ML', 'm s-1', conversion=US%L_T_to_m_s)
+
+  CS%id_prior_t_z = register_diag_field('ocean_model', 'thetao_prior_z', diag_CS%axesTL, &
+    Time, 'Accumulated ocean potential temperature for DA/ML', 'degC', conversion=US%C_to_degC)
+  CS%id_prior_s_z = register_diag_field('ocean_model', 'so_prior_z', diag_CS%axesTL, &
+    Time, 'Accumulated ocean salinity for DA/ML', 'psu', conversion=US%S_to_ppt)
+
+  CS%id_prior_u_z = register_diag_field('ocean_model', 'uo_prior_z', diag_CS%axesCuL, &
+    Time, 'Accumulated ocean zonal velocity for DA/ML', 'm s-1', conversion=US%L_T_to_m_s)
+  CS%id_prior_v_z = register_diag_field('ocean_model', 'vo_prior_z', diag_CS%axesCvL, &
     Time, 'Accumulated ocean meridional velocity for DA/ML', 'm s-1', conversion=US%L_T_to_m_s)
 
   CS%id_prior_taux = register_diag_field('ocean_model', 'taux_prior', diag_CS%axesCu1, &
@@ -505,6 +524,11 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
     CS%id_inc_ml_t = register_diag_field('ocean_model', 'temp_ml_increment', diag_CS%axesTL, &
       Time, 'Ocean potential temperature increments predicted by ML', 'degC', conversion=US%C_to_degC)
     CS%id_inc_ml_s = register_diag_field('ocean_model', 'salt_ml_increment', diag_CS%axesTL, &
+      Time, 'Ocean salinity increments predicted by ML', 'psu', conversion=US%S_to_ppt)
+      
+    CS%id_inc_ml_t_z = register_diag_field('ocean_model', 'temp_ml_increment_z', diag_CS%axesTL, &
+      Time, 'Ocean potential temperature increments predicted by ML', 'degC', conversion=US%C_to_degC)
+    CS%id_inc_ml_s_z = register_diag_field('ocean_model', 'salt_ml_increment_z', diag_CS%axesTL, &
       Time, 'Ocean salinity increments predicted by ML', 'psu', conversion=US%S_to_ppt)
 
     allocate(CS%T_ml_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
@@ -637,6 +661,10 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, model_u, model_v, model_ssh, flu
   if (CS%id_prior_s > 0) call post_data(CS%id_prior_s, tv%S, CS%diag_CS)
   if (CS%id_prior_u > 0) call post_data(CS%id_prior_u, model_u, CS%diag_CS)
   if (CS%id_prior_v > 0) call post_data(CS%id_prior_v, model_v, CS%diag_CS)
+  if (CS%id_prior_t_z > 0) call post_data(CS%id_prior_t_z, T, CS%diag_CS)
+  if (CS%id_prior_s_z > 0) call post_data(CS%id_prior_s_z, S, CS%diag_CS)
+  if (CS%id_prior_u_z > 0) call post_data(CS%id_prior_u_z, U, CS%diag_CS)
+  if (CS%id_prior_v_z > 0) call post_data(CS%id_prior_v_z, V, CS%diag_CS)
   if (CS%id_prior_ssh > 0) call post_data(CS%id_prior_ssh, model_ssh, CS%diag_CS)
   if (CS%id_prior_taux > 0) call post_data(CS%id_prior_taux, forces%taux, CS%diag_CS)
   if (CS%id_prior_tauy > 0) call post_data(CS%id_prior_tauy, forces%tauy, CS%diag_CS)
@@ -714,8 +742,8 @@ subroutine get_posterior_tracer(Time, CS, increment)
 
   ! Time_Next = CS%Time + real_to_time(CS%US%T_to_s*(CS%assim_interval))
   ! call enable_averaging(CS%assim_interval, Time_Next, CS%diag_CS)
-  ! if (CS%id_inc_t > 0) call post_data(CS%id_inc_t, CS%T_tend, CS%diag_CS)
-  ! if (CS%id_inc_s > 0) call post_data(CS%id_inc_s, CS%S_tend, CS%diag_CS)
+  ! if (CS%id_inc_t_z > 0) call post_data(CS%id_inc_t_z, CS%T_tend, CS%diag_CS)
+  ! if (CS%id_inc_s_z > 0) call post_data(CS%id_inc_s_z, CS%S_tend, CS%diag_CS)
   ! call disable_averaging(CS%diag_CS)
 
 end subroutine get_posterior_tracer
@@ -1149,9 +1177,13 @@ subroutine apply_oda_tracer_increments(Time, G, GV, tv, h, CS)
   call enable_averaging(CS%apply_interval, CS%Apply_Time, CS%diag_CS)
   if (CS%id_inc_t > 0) call post_data(CS%id_inc_t, T_tend_inc, CS%diag_CS)
   if (CS%id_inc_s > 0) call post_data(CS%id_inc_s, S_tend_inc, CS%diag_CS)
+  if (CS%id_inc_t_z > 0) call post_data(CS%id_inc_t_z, T_tend, CS%diag_CS)
+  if (CS%id_inc_s_z > 0) call post_data(CS%id_inc_s_z, S_tend, CS%diag_CS)
   if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
     if (CS%id_inc_ml_t > 0) call post_data(CS%id_inc_ml_t, T_ml_tend_inc, CS%diag_CS)
     if (CS%id_inc_ml_s > 0) call post_data(CS%id_inc_ml_s, S_ml_tend_inc, CS%diag_CS)
+    if (CS%id_inc_ml_t_z > 0) call post_data(CS%id_inc_ml_t_z, CS%T_ml_tend, CS%diag_CS)
+    if (CS%id_inc_ml_s_z > 0) call post_data(CS%id_inc_ml_s_z, CS%S_ml_tend, CS%diag_CS)
   endif
   call disable_averaging(CS%diag_CS)
 
