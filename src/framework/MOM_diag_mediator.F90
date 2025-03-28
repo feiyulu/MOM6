@@ -211,6 +211,7 @@ type diagcs_dsamp
 
   !>@{ Axes for each location on a diagnostic grid
   type(axes_grp)  :: axesBL, axesTL, axesCuL, axesCvL
+  type(axes_grp)  :: axesTZ, axesCuZ, axesCvZ
   type(axes_grp)  :: axesBi, axesTi, axesCui, axesCvi
   type(axes_grp)  :: axesB1, axesT1, axesCu1, axesCv1
   type(axes_grp), dimension(:), allocatable :: remap_axesTL, remap_axesBL, remap_axesCuL, remap_axesCvL
@@ -262,11 +263,13 @@ type, public :: diag_ctrl
   !>@{ The following are 3D and 2D axis groups defined for output.  The names
   !! indicate the horizontal (B, T, Cu, or Cv) and vertical (L, i, or 1) locations.
   type(axes_grp) :: axesBL, axesTL, axesCuL, axesCvL
+  type(axes_grp) :: axesTZ, axesCuZ, axesCvZ
   type(axes_grp) :: axesBi, axesTi, axesCui, axesCvi
   type(axes_grp) :: axesB1, axesT1, axesCu1, axesCv1
   !>@}
   type(axes_grp) :: axesZi !< A 1-D z-space axis at interfaces
   type(axes_grp) :: axesZL !< A 1-D z-space axis at layer centers
+  type(axes_grp) :: axesZ !< A 1-D z-space axis at layer centers
   type(axes_grp) :: axesNull !< An axis group for scalars
 
   real, dimension(:,:),   pointer :: mask2dT   => null() !< 2D mask array for cell-center points
@@ -305,9 +308,11 @@ type, public :: diag_ctrl
 
   type(axes_grp), dimension(:), allocatable :: &
     remap_axesZL, &  !< The 1-D z-space cell-centered axis for remapping
+    remap_axesZ, &  !< The 1-D z-space cell-centered axis for remapping
     remap_axesZi     !< The 1-D z-space interface axis for remapping
   !>@{ Axes used for remapping
   type(axes_grp), dimension(:), allocatable :: remap_axesTL, remap_axesBL, remap_axesCuL, remap_axesCvL
+  type(axes_grp), dimension(:), allocatable :: remap_axesTZ, remap_axesCuZ, remap_axesCvZ
   type(axes_grp), dimension(:), allocatable :: remap_axesTi, remap_axesBi, remap_axesCui, remap_axesCvi
   !>@}
 
@@ -355,8 +360,8 @@ subroutine set_axes_info(G, GV, US, param_file, diag_cs, set_vertical)
   logical,       optional, intent(in)    :: set_vertical !< If true or missing, set up
                                                        !! vertical axes
   ! Local variables
-  integer :: id_xq, id_yq, id_zl, id_zi, id_xh, id_yh, id_null
-  integer :: id_zl_native, id_zi_native
+  integer :: id_xq, id_yq, id_zl, id_z, id_zi, id_xh, id_yh, id_null
+  integer :: id_zl_native, id_zi_native, id_z_native
   integer :: i, j, nz
   real :: zlev(GV%ke), zinter(GV%ke+1)
   logical :: set_vert
@@ -431,22 +436,35 @@ subroutine set_axes_info(G, GV, US, param_file, diag_cs, set_vertical)
     zlev(1:nz) = GV%sLayer(1:nz)
     id_zl = diag_axis_init('zl', zlev, trim(GV%zAxisUnits), 'z', &
                            'Layer '//trim(GV%zAxisLongName), direction=GV%direction)
+    id_z = diag_axis_init('z', zlev, trim(GV%zAxisUnits), 'z', &
+                           'LayerZ '//trim(GV%zAxisLongName), direction=GV%direction)
     id_zi = diag_axis_init('zi', zinter, trim(GV%zAxisUnits), 'z', &
                            'Interface '//trim(GV%zAxisLongName), direction=GV%direction)
   else
-    id_zl = -1 ; id_zi = -1
+    id_zl = -1 ; id_zi = -1 ; id_z = -1
   endif
-  id_zl_native = id_zl ; id_zi_native = id_zi
+  id_zl_native = id_zl ; id_zi_native = id_zi ; id_z_native = id_z
   ! Vertical axes for the interfaces and layers
   call define_axes_group(diag_cs, (/ id_zi /), diag_cs%axesZi, &
        v_cell_method='point', is_interface=.true.)
   call define_axes_group(diag_cs, (/ id_zL /), diag_cs%axesZL, &
+       v_cell_method='mean', is_layer=.true.)
+  call define_axes_group(diag_cs, (/ id_z /), diag_cs%axesZ, &
        v_cell_method='mean', is_layer=.true.)
 
   ! Axis groupings for the model layers
   call define_axes_group(diag_cs, (/ id_xh, id_yh, id_zL /), diag_cs%axesTL, &
        x_cell_method='mean', y_cell_method='mean', v_cell_method='mean', &
        is_h_point=.true., is_layer=.true., xyave_axes=diag_cs%axesZL)
+  call define_axes_group(diag_cs, (/ id_xh, id_yh, id_z /), diag_cs%axesTZ, &
+       x_cell_method='mean', y_cell_method='mean', v_cell_method='mean', &
+       is_h_point=.true., is_layer=.true., xyave_axes=diag_cs%axesZ)
+  call define_axes_group(diag_cs, (/ id_xq, id_yh, id_z /), diag_cs%axesCuZ, &
+       x_cell_method='point', y_cell_method='mean', v_cell_method='mean', &
+       is_u_point=.true., is_layer=.true., xyave_axes=diag_cs%axesZ)
+  call define_axes_group(diag_cs, (/ id_xh, id_yq, id_z /), diag_cs%axesCvZ, &
+       x_cell_method='mean', y_cell_method='point', v_cell_method='mean', &
+       is_v_point=.true., is_layer=.true., xyave_axes=diag_cs%axesZ)
   call define_axes_group(diag_cs, (/ id_xq, id_yq, id_zL /), diag_cs%axesBL, &
        x_cell_method='point', y_cell_method='point', v_cell_method='mean', &
        is_q_point=.true., is_layer=.true.)
@@ -488,7 +506,11 @@ subroutine set_axes_info(G, GV, US, param_file, diag_cs, set_vertical)
   !Non-native Non-downsampled
   if (diag_cs%num_diag_coords>0) then
     allocate(diag_cs%remap_axesZL(diag_cs%num_diag_coords))
+    allocate(diag_cs%remap_axesZ(diag_cs%num_diag_coords))
     allocate(diag_cs%remap_axesTL(diag_cs%num_diag_coords))
+    allocate(diag_cs%remap_axesTZ(diag_cs%num_diag_coords))
+    allocate(diag_cs%remap_axesCuZ(diag_cs%num_diag_coords))
+    allocate(diag_cs%remap_axesCvZ(diag_cs%num_diag_coords))
     allocate(diag_cs%remap_axesBL(diag_cs%num_diag_coords))
     allocate(diag_cs%remap_axesCuL(diag_cs%num_diag_coords))
     allocate(diag_cs%remap_axesCvL(diag_cs%num_diag_coords))
@@ -519,11 +541,32 @@ subroutine set_axes_info(G, GV, US, param_file, diag_cs, set_vertical)
            nz=nz, vertical_coordinate_number=i, &
            v_cell_method='mean', &
            is_h_point=.true., is_layer=.true., is_native=.false., needs_remapping=.true.)
+      call define_axes_group(diag_cs, (/ id_z /), diag_cs%remap_axesZ(i), &
+           nz=nz, vertical_coordinate_number=i, &
+           v_cell_method='mean', &
+           is_h_point=.true., is_layer=.true., is_native=.true., needs_remapping=.false.)
       call define_axes_group(diag_cs, (/ id_xh, id_yh, id_zL /), diag_cs%remap_axesTL(i), &
            nz=nz, vertical_coordinate_number=i, &
            x_cell_method='mean', y_cell_method='mean', v_cell_method='mean', &
            is_h_point=.true., is_layer=.true., is_native=.false., needs_remapping=.true., &
            xyave_axes=diag_cs%remap_axesZL(i))
+      call define_axes_group(diag_cs, (/ id_xh, id_yh, id_z /), diag_cs%remap_axesTZ(i), &
+           nz=nz, vertical_coordinate_number=i, &
+           x_cell_method='mean', y_cell_method='mean', v_cell_method='mean', &
+           is_h_point=.true., is_layer=.true., is_native=.true., needs_remapping=.false., &
+           xyave_axes=diag_cs%remap_axesZ(i))
+
+      call define_axes_group(diag_cs, (/ id_xq, id_yh, id_z /), diag_cs%remap_axesCuZ(i), &
+           nz=nz, vertical_coordinate_number=i, &
+           x_cell_method='point', y_cell_method='mean', v_cell_method='mean', &
+           is_u_point=.true., is_layer=.true., is_native=.true., needs_remapping=.false., &
+           xyave_axes=diag_cs%remap_axesZ(i))
+
+      call define_axes_group(diag_cs, (/ id_xh, id_yq, id_z /), diag_cs%remap_axesCvZ(i), &
+           nz=nz, vertical_coordinate_number=i, &
+           x_cell_method='mean', y_cell_method='point', v_cell_method='mean', &
+           is_v_point=.true., is_layer=.true., is_native=.true., needs_remapping=.false., &
+           xyave_axes=diag_cs%remap_axesZ(i))
 
        !! \note Remapping for B points is not yet implemented so needs_remapping is not
        !! provided for remap_axesBL
@@ -579,29 +622,30 @@ subroutine set_axes_info(G, GV, US, param_file, diag_cs, set_vertical)
     deallocate(IaxB, iax, JaxB, jax)
   endif
   !Define the downsampled axes
-  call set_axes_info_dsamp(G, GV, param_file, diag_cs, id_zl_native, id_zi_native)
+  call set_axes_info_dsamp(G, GV, param_file, diag_cs, id_zl_native, id_zi_native, id_z_native)
 
   call diag_grid_storage_init(diag_CS%diag_grid_temp, G, GV, diag_CS)
 
 end subroutine set_axes_info
 
-subroutine set_axes_info_dsamp(G, GV, param_file, diag_cs, id_zl_native, id_zi_native)
+subroutine set_axes_info_dsamp(G, GV, param_file, diag_cs, id_zl_native, id_zi_native, id_z_native)
   type(ocean_grid_type), intent(in) :: G !< Ocean grid structure
   type(verticalGrid_type), intent(in)  :: GV !< ocean vertical grid structure
   type(param_file_type), intent(in)    :: param_file !< Parameter file structure
   type(diag_ctrl),       intent(inout) :: diag_cs !< Diagnostics control structure
   integer,               intent(in)    :: id_zl_native !< ID of native layers
   integer,               intent(in)    :: id_zi_native !< ID of native interfaces
+  integer,               intent(in)    :: id_z_native !< ID of native interfaces
 
   ! Local variables
-  integer :: id_xq, id_yq, id_zl, id_zi, id_xh, id_yh
+  integer :: id_xq, id_yq, id_zl, id_zi, id_xh, id_yh, id_z
   integer :: i, j, nz, dl
   real, dimension(:), pointer :: gridLonT_dsamp =>NULL()
   real, dimension(:), pointer :: gridLatT_dsamp =>NULL()
   real, dimension(:), pointer :: gridLonB_dsamp =>NULL()
   real, dimension(:), pointer :: gridLatB_dsamp =>NULL()
 
-  id_zl = id_zl_native ; id_zi = id_zi_native
+  id_zl = id_zl_native ; id_zi = id_zi_native ; id_z = id_z_native
   !Axes group for native downsampled diagnostics
   do dl=2,MAX_DSAMP_LEV
     if (dl /= 2) call MOM_error(FATAL, "set_axes_info_dsamp: Downsample level other than 2 is not supported yet!")
@@ -642,6 +686,15 @@ subroutine set_axes_info_dsamp(G, GV, param_file, diag_cs, id_zl_native, id_zi_n
     call define_axes_group_dsamp(diag_cs, (/ id_xh, id_yh, id_zL /), diag_cs%dsamp(dl)%axesTL, dl, &
             x_cell_method='mean', y_cell_method='mean', v_cell_method='mean', &
             is_h_point=.true., is_layer=.true., xyave_axes=diag_cs%axesZL)
+    call define_axes_group_dsamp(diag_cs, (/ id_xh, id_yh, id_z /), diag_cs%dsamp(dl)%axesTZ, dl, &
+            x_cell_method='mean', y_cell_method='mean', v_cell_method='mean', &
+            is_h_point=.true., is_layer=.true., xyave_axes=diag_cs%axesZ)
+    call define_axes_group_dsamp(diag_cs, (/ id_xq, id_yh, id_z /), diag_cs%dsamp(dl)%axesCuZ, dl, &
+            x_cell_method='point', y_cell_method='mean', v_cell_method='mean', &
+            is_u_point=.true., is_layer=.true., xyave_axes=diag_cs%axesZ)
+    call define_axes_group_dsamp(diag_cs, (/ id_xh, id_yq, id_z /), diag_cs%dsamp(dl)%axesCvZ, dl, &
+            x_cell_method='mean', y_cell_method='point', v_cell_method='mean', &
+            is_v_point=.true., is_layer=.true., xyave_axes=diag_cs%axesZ)
     call define_axes_group_dsamp(diag_cs, (/ id_xq, id_yq, id_zL /), diag_cs%dsamp(dl)%axesBL, dl, &
             x_cell_method='point', y_cell_method='point', v_cell_method='mean', &
             is_q_point=.true., is_layer=.true.)
@@ -934,8 +987,10 @@ subroutine diag_register_area_ids(diag_cs, id_area_t, id_area_q)
     diag_cs%axesT1%id_area = fms_id
     diag_cs%axesTi%id_area = fms_id
     diag_cs%axesTL%id_area = fms_id
+    diag_cs%axesTZ%id_area = fms_id
     do i=1, diag_cs%num_diag_coords
       diag_cs%remap_axesTL(i)%id_area = fms_id
+      diag_cs%remap_axesTZ(i)%id_area = fms_id
       diag_cs%remap_axesTi(i)%id_area = fms_id
     enddo
   endif
@@ -2149,6 +2204,12 @@ integer function register_diag_field(module_name, field_name, axes_in, init_time
   ! If not, allocate the new axis and copy the contents.
   if (axes_in%id == diag_cs%axesTL%id) then
     axes => diag_cs%axesTL
+  elseif (axes_in%id == diag_cs%axesTZ%id) then
+    axes => diag_cs%axesTZ
+  elseif (axes_in%id == diag_cs%axesCuZ%id) then
+    axes => diag_cs%axesCuZ
+  elseif (axes_in%id == diag_cs%axesCvZ%id) then
+    axes => diag_cs%axesCvZ
   elseif (axes_in%id == diag_cs%axesBL%id) then
     axes => diag_cs%axesBL
   elseif (axes_in%id == diag_cs%axesCuL%id) then
@@ -2213,6 +2274,12 @@ integer function register_diag_field(module_name, field_name, axes_in, init_time
       remap_axes => null()
       if ((axes_in%id == diag_cs%axesTL%id)) then
         remap_axes => diag_cs%remap_axesTL(i)
+      elseif ((axes_in%id == diag_cs%axesTZ%id)) then
+        remap_axes => diag_cs%remap_axesTZ(i)
+      elseif (axes_in%id == diag_cs%axesCuZ%id ) then
+        remap_axes => diag_cs%remap_axesCuZ(i)
+      elseif (axes_in%id == diag_cs%axesCvZ%id) then
+        remap_axes => diag_cs%remap_axesCvZ(i)
       elseif (axes_in%id == diag_cs%axesBL%id) then
         remap_axes => diag_cs%remap_axesBL(i)
       elseif (axes_in%id == diag_cs%axesCuL%id ) then

@@ -10,7 +10,7 @@ use MOM_domains, only : domain2d, global_field, get_domain_extent
 use MOM_domains, only : pass_var, redistribute_array, broadcast_domain
 use MOM_diag_mediator, only : register_diag_field, diag_axis_init, post_data
 use MOM_diag_mediator, only : enable_averaging, disable_averaging
-use MOM_diag_mediator, only : diag_update_remap_grids
+use MOM_diag_mediator, only : register_scalar_field
 use MOM_ensemble_manager, only : get_ensemble_id, get_ensemble_size
 use MOM_ensemble_manager, only : get_ensemble_pelist, get_ensemble_filter_pelist
 use MOM_error_handler, only : stdout, stdlog, MOM_error
@@ -43,7 +43,7 @@ use eakf_oda_mod, only : ensemble_filter
 use kdtree, only : kd_root !# A kd-tree object using JEDI APIs
 ! MOM Modules
 use MOM_io, only : slasher, MOM_read_data
-use MOM_diag_mediator, only : diag_ctrl, set_axes_info
+use MOM_diag_mediator, only : diag_ctrl
 use MOM_error_handler, only : FATAL, WARNING, MOM_error, MOM_mesg, is_root_pe
 use MOM_get_input, only : get_MOM_input, directories
 use MOM_grid, only : ocean_grid_type, MOM_grid_init
@@ -172,6 +172,7 @@ type, public :: ODA_CS ; private
   integer :: id_inc_s_z = -1 !< A diagnostic handle for the salinity climatological adjustment
   integer :: id_inc_ml_t_z = -1 !< A diagnostic handle for the temperature climatological adjustment
   integer :: id_inc_ml_s_z = -1 !< A diagnostic handle for the salinity climatological adjustment
+  integer :: id_prior_count = -1
   integer :: id_prior_t = -1, id_prior_s = -1, id_prior_u = -1, id_prior_v = -1
   integer :: id_prior_t_z = -1, id_prior_s_z = -1, id_prior_u_z = -1, id_prior_v_z = -1
   integer :: id_prior_ssh = -1, id_prior_taux = -1, id_prior_tauy = -1
@@ -426,10 +427,12 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
       Time, 'Ocean potential temperature increments', 'degC', conversion=US%C_to_degC)
   CS%id_inc_s = register_diag_field('ocean_model', 'salt_increment', diag_CS%axesTL, &
       Time, 'Ocean salinity increments', 'psu', conversion=US%S_to_ppt)
-  CS%id_inc_t_z = register_diag_field('ocean_model', 'temp_increment_z', diag_CS%axesTL, &
+  CS%id_inc_t_z = register_diag_field('ocean_model', 'temp_increment_z', diag_CS%axesTZ, &
       Time, 'Ocean potential temperature increments', 'degC', conversion=US%C_to_degC)
-  CS%id_inc_s_z = register_diag_field('ocean_model', 'salt_increment_z', diag_CS%axesTL, &
+  CS%id_inc_s_z = register_diag_field('ocean_model', 'salt_increment_z', diag_CS%axesTZ, &
       Time, 'Ocean salinity increments', 'psu', conversion=US%S_to_ppt)
+
+  CS%id_prior_count = register_scalar_field('ocean_model', 'prior_count', Time, diag_CS, 'Prior Count' )
 
   CS%id_prior_t = register_diag_field('ocean_model', 'thetao_prior', diag_CS%axesTL, &
       Time, 'Accumulated ocean potential temperature for DA/ML', 'degC', conversion=US%C_to_degC)
@@ -443,14 +446,14 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
   CS%id_prior_v = register_diag_field('ocean_model', 'vo_prior', diag_CS%axesCvL, &
     Time, 'Accumulated ocean meridional velocity for DA/ML', 'm s-1', conversion=US%L_T_to_m_s)
 
-  CS%id_prior_t_z = register_diag_field('ocean_model', 'thetao_prior_z', diag_CS%axesTL, &
+  CS%id_prior_t_z = register_diag_field('ocean_model', 'thetao_prior_z', diag_CS%axesTZ, &
     Time, 'Accumulated ocean potential temperature for DA/ML', 'degC', conversion=US%C_to_degC)
-  CS%id_prior_s_z = register_diag_field('ocean_model', 'so_prior_z', diag_CS%axesTL, &
+  CS%id_prior_s_z = register_diag_field('ocean_model', 'so_prior_z', diag_CS%axesTZ, &
     Time, 'Accumulated ocean salinity for DA/ML', 'psu', conversion=US%S_to_ppt)
 
-  CS%id_prior_u_z = register_diag_field('ocean_model', 'uo_prior_z', diag_CS%axesCuL, &
+  CS%id_prior_u_z = register_diag_field('ocean_model', 'uo_prior_z', diag_CS%axesCuZ, &
     Time, 'Accumulated ocean zonal velocity for DA/ML', 'm s-1', conversion=US%L_T_to_m_s)
-  CS%id_prior_v_z = register_diag_field('ocean_model', 'vo_prior_z', diag_CS%axesCvL, &
+  CS%id_prior_v_z = register_diag_field('ocean_model', 'vo_prior_z', diag_CS%axesCvZ, &
     Time, 'Accumulated ocean meridional velocity for DA/ML', 'm s-1', conversion=US%L_T_to_m_s)
 
   CS%id_prior_taux = register_diag_field('ocean_model', 'taux_prior', diag_CS%axesCu1, &
@@ -521,15 +524,19 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
     allocate(CS%ml_config)
     call oda_ml_init(CS%ml_config, CS%ml_data, CS%GV)
 
-    CS%id_inc_ml_t = register_diag_field('ocean_model', 'temp_ml_increment', diag_CS%axesTL, &
+    if (CS%do_T_ml_bias_adjustment) then
+      CS%id_inc_ml_t = register_diag_field('ocean_model', 'temp_ml_increment', diag_CS%axesTL, &
+        Time, 'Ocean potential temperature increments predicted by ML', 'degC', conversion=US%C_to_degC)
+      CS%id_inc_ml_t_z = register_diag_field('ocean_model', 'temp_ml_increment_z', diag_CS%axesTZ, &
       Time, 'Ocean potential temperature increments predicted by ML', 'degC', conversion=US%C_to_degC)
-    CS%id_inc_ml_s = register_diag_field('ocean_model', 'salt_ml_increment', diag_CS%axesTL, &
-      Time, 'Ocean salinity increments predicted by ML', 'psu', conversion=US%S_to_ppt)
-      
-    CS%id_inc_ml_t_z = register_diag_field('ocean_model', 'temp_ml_increment_z', diag_CS%axesTL, &
-      Time, 'Ocean potential temperature increments predicted by ML', 'degC', conversion=US%C_to_degC)
-    CS%id_inc_ml_s_z = register_diag_field('ocean_model', 'salt_ml_increment_z', diag_CS%axesTL, &
-      Time, 'Ocean salinity increments predicted by ML', 'psu', conversion=US%S_to_ppt)
+    endif
+
+    if (CS%do_S_ml_bias_adjustment) then
+      CS%id_inc_ml_s = register_diag_field('ocean_model', 'salt_ml_increment', diag_CS%axesTL, &
+        Time, 'Ocean salinity increments predicted by ML', 'psu', conversion=US%S_to_ppt)
+      CS%id_inc_ml_s_z = register_diag_field('ocean_model', 'salt_ml_increment_z', diag_CS%axesTZ, &
+        Time, 'Ocean salinity increments predicted by ML', 'psu', conversion=US%S_to_ppt)
+    endif
 
     allocate(CS%T_ml_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
     allocate(CS%S_ml_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
@@ -566,7 +573,7 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, model_u, model_v, model_ssh, flu
   real, dimension(SZI_(G),SZJB_(G),CS%nk) :: V      !< meridional velocity [L T-1 ~> m s-1]
 
   integer :: i, j, m
-  ! integer :: isc, iec, jsc, jec
+  integer :: isc, iec, jsc, jec, iscB, iecB, jscB, jecB
   real :: h_neglect, h_neglect_edge                 ! small thicknesses [H ~> m or kg m-2]
   integer :: isd, ied, jsd, jed
   character(len=160) :: mesg  ! The text of an error message
@@ -591,26 +598,26 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, model_u, model_v, model_ssh, flu
     h_neglect = GV%kg_m2_to_H * 1.0e-30 ; h_neglect_edge = GV%kg_m2_to_H * 1.0e-10
   endif
 
-  ! computational domain for the analysis grid
-  ! isc=CS%Grid%isc;iec=CS%Grid%iec;jsc=CS%Grid%jsc;jec=CS%Grid%jec
+  isc  = G%isc ; iec  = G%iec  ; jsc  = G%jsc  ; jec  = G%jec
+  iscB  = G%iscB ; iecB  = G%iecB  ; jscB  = G%jscB  ; jecB  = G%jecB
 
   ! remap temperature and salinity from the ensemble member to the analysis grid
-  do j=G%jsc,G%jec ; do i=G%isc,G%iec
+  do j=jsc,jec ; do i=isc,iec
     call remapping_core_h(CS%remapCS, GV%ke, h(i,j,:), tv%T(i,j,:), &
          CS%nk, CS%h(i,j,:), T(i,j,:), h_neglect, h_neglect_edge)
     call remapping_core_h(CS%remapCS, GV%ke, h(i,j,:), tv%S(i,j,:), &
          CS%nk, CS%h(i,j,:), S(i,j,:), h_neglect, h_neglect_edge)
   enddo ; enddo
   ! remap U and V from the ensemble member to the analysis grid
-  do j=G%jsc,G%jec ; do i=G%iscB,G%iecB
+  do j=jsc,jec ; do i=iscB,iecB
     call remapping_core_h(CS%remapCS, GV%ke, h(i,j,:), model_u(i,j,:), &
          CS%nk, CS%h(i,j,:), U(i,j,:), h_neglect, h_neglect_edge)
   enddo ; enddo
-  do j=G%jscB,G%jecB ; do i=G%isc,G%iec
+  do j=jscB,jecB ; do i=isc,iec
     call remapping_core_h(CS%remapCS, GV%ke, h(i,j,:), model_v(i,j,:), &
          CS%nk, CS%h(i,j,:), V(i,j,:), h_neglect, h_neglect_edge)
   enddo ; enddo
-
+  
   ! cast ensemble members to the analysis domain
   if (CS%prior_ave_counter < 0.5) then
     CS%Ocean_background_ave%T = 0.0
@@ -627,17 +634,29 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, model_u, model_v, model_ssh, flu
     call MOM_mesg("ODA Reset background accumulation")
   endif
   
-  CS%Ocean_background_ave%T = CS%Ocean_background_ave%T + T
-  CS%Ocean_background_ave%S = CS%Ocean_background_ave%S + S
-  CS%Ocean_background_ave%U = CS%Ocean_background_ave%U + U
-  CS%Ocean_background_ave%V = CS%Ocean_background_ave%V + V
-  CS%Ocean_background_ave%SSH = CS%Ocean_background_ave%SSH + model_ssh
-  CS%Ocean_background_ave%taux = CS%Ocean_background_ave%taux + forces%taux
-  CS%Ocean_background_ave%tauy = CS%Ocean_background_ave%tauy + forces%tauy
-  CS%Ocean_background_ave%latent = CS%Ocean_background_ave%latent + fluxes%latent
-  CS%Ocean_background_ave%sensible = CS%Ocean_background_ave%sensible + fluxes%sens
-  CS%Ocean_background_ave%lw = CS%Ocean_background_ave%lw + fluxes%lw
-  CS%Ocean_background_ave%sw = CS%Ocean_background_ave%sw + fluxes%sw
+  CS%Ocean_background_ave%T(isc:iec,jsc:jec,:) = CS%Ocean_background_ave%T(isc:iec,jsc:jec,:) + T(isc:iec,jsc:jec,:)
+  CS%Ocean_background_ave%S(isc:iec,jsc:jec,:) = CS%Ocean_background_ave%S(isc:iec,jsc:jec,:) + S(isc:iec,jsc:jec,:)
+  CS%Ocean_background_ave%U(iscB:iecB,jsc:jec,:) = CS%Ocean_background_ave%U(iscB:iecB,jsc:jec,:) + U(iscB:iecB,jsc:jec,:)
+  CS%Ocean_background_ave%V(isc:iec,jscB:jecB,:) = CS%Ocean_background_ave%V(isc:iec,jscB:jecB,:) + V(isc:iec,jscB:jecB,:)
+  CS%Ocean_background_ave%SSH(isc:iec,jsc:jec) = CS%Ocean_background_ave%SSH(isc:iec,jsc:jec) + model_ssh(isc:iec,jsc:jec)
+  CS%Ocean_background_ave%taux(iscB:iecB,jsc:jec) = CS%Ocean_background_ave%taux(iscB:iecB,jsc:jec) + forces%taux(iscB:iecB,jsc:jec)
+  CS%Ocean_background_ave%tauy(isc:iec,jscB:jecB) = CS%Ocean_background_ave%tauy(isc:iec,jscB:jecB) + forces%tauy(isc:iec,jscB:jecB)
+  CS%Ocean_background_ave%latent(isc:iec,jsc:jec) = CS%Ocean_background_ave%latent(isc:iec,jsc:jec) + fluxes%latent(isc:iec,jsc:jec)
+  CS%Ocean_background_ave%sensible(isc:iec,jsc:jec) = CS%Ocean_background_ave%sensible(isc:iec,jsc:jec) + fluxes%sens(isc:iec,jsc:jec)
+  CS%Ocean_background_ave%lw(isc:iec,jsc:jec) = CS%Ocean_background_ave%lw(isc:iec,jsc:jec) + fluxes%lw(isc:iec,jsc:jec)
+  CS%Ocean_background_ave%sw(isc:iec,jsc:jec) = CS%Ocean_background_ave%sw(isc:iec,jsc:jec) + fluxes%sw(isc:iec,jsc:jec)
+  
+  call pass_var(CS%Ocean_background_ave%T,G%Domain)
+  call pass_var(CS%Ocean_background_ave%S,G%Domain)
+  call pass_var(CS%Ocean_background_ave%U,G%Domain)
+  call pass_var(CS%Ocean_background_ave%V,G%Domain)
+  call pass_var(CS%Ocean_background_ave%SSH,G%Domain)
+  call pass_var(CS%Ocean_background_ave%taux,G%Domain)
+  call pass_var(CS%Ocean_background_ave%tauy,G%Domain)
+  call pass_var(CS%Ocean_background_ave%latent,G%Domain)
+  call pass_var(CS%Ocean_background_ave%sensible,G%Domain)
+  call pass_var(CS%Ocean_background_ave%lw,G%Domain)
+  call pass_var(CS%Ocean_background_ave%sw,G%Domain)
 
   CS%prior_ave_counter = CS%prior_ave_counter + 1.0
 
@@ -657,6 +676,7 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, model_u, model_v, model_ssh, flu
 
   call enable_averaging(CS%prior_interval, CS%Prior_Time, CS%diag_CS)
 
+  if (CS%id_prior_count > 0) call post_data(CS%id_prior_count, CS%prior_ave_counter, CS%diag_CS)
   if (CS%id_prior_t > 0) call post_data(CS%id_prior_t, tv%T, CS%diag_CS)
   if (CS%id_prior_s > 0) call post_data(CS%id_prior_s, tv%S, CS%diag_CS)
   if (CS%id_prior_u > 0) call post_data(CS%id_prior_u, model_u, CS%diag_CS)
@@ -674,7 +694,6 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, model_u, model_v, model_ssh, flu
   if (CS%id_prior_sw > 0) call post_data(CS%id_prior_sw, fluxes%sw, CS%diag_CS)
   
   call disable_averaging(CS%diag_CS)
-  ! call diag_update_remap_grids(CS%diag_CS)
 
   ! call enable_averaging(CS%prior_interval, CS%Prior_Time, CS%diag_CS)
   ! if (CS%id_prior_t > 0) call post_data(CS%id_prior_t, T, CS%diag_CS)
@@ -757,10 +776,10 @@ subroutine oda(Time, CS)
   integer :: yr, mon, day, hr, min, sec
   integer :: isc, iec, jsc, jec
 
-  isc=CS%model_G%isc; iec=CS%model_G%iec; jsc=CS%model_G%jsc; jec=CS%model_G%jec
-
   if ( Time >= CS%Time ) then
     call cpu_clock_begin(id_clock_ensemble_filter)
+
+    isc=CS%model_G%isc; iec=CS%model_G%iec; jsc=CS%model_G%jsc; jec=CS%model_G%jec
 
     call get_date(Time, yr, mon, day, hr, min, sec)
     write(mesg,*) 'Count: ', INT(CS%prior_ave_counter),' Model Time: ', yr, mon, day, hr, min, sec
@@ -778,19 +797,17 @@ subroutine oda(Time, CS)
     CS%Ocean_background_ave%lw = CS%Ocean_background_ave%lw / (CS%prior_ave_counter)
     CS%Ocean_background_ave%sw = CS%Ocean_background_ave%sw / (CS%prior_ave_counter)
 
-    do m=1,CS%ensemble_size
-      call pass_var(CS%Ocean_background_ave%T,CS%model_G%Domain)
-      call pass_var(CS%Ocean_background_ave%S,CS%model_G%Domain)
-      call pass_var(CS%Ocean_background_ave%U,CS%model_G%Domain)
-      call pass_var(CS%Ocean_background_ave%V,CS%model_G%Domain)
-      call pass_var(CS%Ocean_background_ave%SSH,CS%model_G%Domain)
-      call pass_var(CS%Ocean_background_ave%taux,CS%model_G%Domain)
-      call pass_var(CS%Ocean_background_ave%tauy,CS%model_G%Domain)
-      call pass_var(CS%Ocean_background_ave%latent,CS%model_G%Domain)
-      call pass_var(CS%Ocean_background_ave%sensible,CS%model_G%Domain)
-      call pass_var(CS%Ocean_background_ave%lw,CS%model_G%Domain)
-      call pass_var(CS%Ocean_background_ave%sw,CS%model_G%Domain)
-    enddo
+    call pass_var(CS%Ocean_background_ave%T,CS%model_G%Domain)
+    call pass_var(CS%Ocean_background_ave%S,CS%model_G%Domain)
+    call pass_var(CS%Ocean_background_ave%U,CS%model_G%Domain)
+    call pass_var(CS%Ocean_background_ave%V,CS%model_G%Domain)
+    call pass_var(CS%Ocean_background_ave%SSH,CS%model_G%Domain)
+    call pass_var(CS%Ocean_background_ave%taux,CS%model_G%Domain)
+    call pass_var(CS%Ocean_background_ave%tauy,CS%model_G%Domain)
+    call pass_var(CS%Ocean_background_ave%latent,CS%model_G%Domain)
+    call pass_var(CS%Ocean_background_ave%sensible,CS%model_G%Domain)
+    call pass_var(CS%Ocean_background_ave%lw,CS%model_G%Domain)
+    call pass_var(CS%Ocean_background_ave%sw,CS%model_G%Domain)
     
     CS%prior_ave_counter = 0.0
 
@@ -907,15 +924,17 @@ subroutine get_ML_bias_correction(Time, US, CS)
   type(ODA_CS), pointer :: CS !< ocean DA control structure
 
   ! Local variables
-  integer :: isd, ied, jsd, jed
+  integer :: isc, iec, jsc, jec
   integer :: i,j,k
+  character(len=160) :: mesg  ! The text of an error message
 
   call cpu_clock_begin(id_clock_ml_bias_correction)
 
   call MOM_mesg('Doing ML inference')
 
+  isc=CS%model_G%isc; iec=CS%model_G%iec; jsc=CS%model_G%jsc; jec=CS%model_G%jec
   !! Loop through all local gridpoints
-  do j=CS%model_G%jsc,CS%model_G%jec ; do i=CS%model_G%isc,CS%model_G%iec
+  do j=jsc,jec ; do i=isc,iec
 
     if (CS%model_G%geolatT(i,j) > 60.0 .or. CS%model_G%geolatT(i,j) < -60.0) then
       CS%T_ml_tend(i,j,:) = 0.0
@@ -990,22 +1009,18 @@ subroutine init_ocean_ensemble(CS,Grid,GV,ens_size)
   integer, intent(in) :: ens_size !< ensemble size
 
   integer :: isd, ied, jsd, jed, nk, isdB, iedB, jsdB, jedB
-
+  character(len=160) :: mesg  ! The text of an error message
+  
   nk=GV%ke
   isd  = Grid%isd ; ied  = Grid%ied  ; jsd  = Grid%jsd  ; jed  = Grid%jed
   isdB = Grid%isdB; iedB = Grid%iedB ; jsdB = Grid%jsdB ; jedB = Grid%jedB
   CS%ensemble_size=ens_size
-  
+
   allocate(CS%T(isd:ied,jsd:jed,nk,ens_size),source=0.0)
   allocate(CS%S(isd:ied,jsd:jed,nk,ens_size),source=0.0)
   allocate(CS%SSH(isd:ied,jsd:jed,ens_size),source=0.0)
-!  allocate(CS%id_t(ens_size), source=-1)
-!  allocate(CS%id_s(ens_size), source=-1)
   ! allocate(CS%U(isdB:iedB,jsd:jed,nk,ens_size),source=0.0)
   ! allocate(CS%V(isd:ied,jsdB:jedB,nk,ens_size),source=0.0)
-!  allocate(CS%id_u(ens_size), source=-1)
-!  allocate(CS%id_v(ens_size), source=-1)
-!  allocate(CS%id_ssh(ens_size), source=-1)
 
   return
 end subroutine init_ocean_ensemble
@@ -1017,11 +1032,12 @@ subroutine init_ocean_background(CS,Grid,GV)
   type(verticalGrid_type), pointer :: GV !< Pointer to DA vertical grid
 
   integer :: isd, ied, jsd, jed, nk, isdB, iedB, jsdB, jedB
+  character(len=160) :: mesg  ! The text of an error message
 
   nk=GV%ke
   isd  = Grid%isd ; ied  = Grid%ied  ; jsd  = Grid%jsd  ; jed  = Grid%jed
   isdB = Grid%isdB; iedB = Grid%iedB ; jsdB = Grid%jsdB ; jedB = Grid%jedB
-  
+
   allocate(CS%T(isd:ied,jsd:jed,nk),source=0.0)
   allocate(CS%S(isd:ied,jsd:jed,nk),source=0.0)
   allocate(CS%SSH(isd:ied,jsd:jed),source=0.0)
@@ -1033,11 +1049,6 @@ subroutine init_ocean_background(CS,Grid,GV)
   allocate(CS%sensible(isd:ied,jsd:jed),source=0.0)
   allocate(CS%lw(isd:ied,jsd:jed),source=0.0)
   allocate(CS%sw(isd:ied,jsd:jed),source=0.0)
-!  allocate(CS%id_t(ens_size), source=-1)
-!  allocate(CS%id_s(ens_size), source=-1)
-!  allocate(CS%id_u(ens_size), source=-1)
-!  allocate(CS%id_v(ens_size), source=-1)
-!  allocate(CS%id_ssh(ens_size), source=-1)
 
   return
 end subroutine init_ocean_background
@@ -1139,6 +1150,9 @@ subroutine apply_oda_tracer_increments(Time, G, GV, tv, h, CS)
   endif
 
   isc=G%isc; iec=G%iec; jsc=G%jsc; jec=G%jec
+  write(mesg,*) 'indices: ', isc, iec, jsc, jec
+  call MOM_mesg("apply_oda_tracer_increments: "//trim(mesg))
+
   do j=jsc,jec; do i=isc,iec
     call remapping_core_h(CS%remapCS, CS%nk, CS%h(i,j,:), T_tend(i,j,:), &
          G%ke, h(i,j,:), T_tend_inc(i,j,:), h_neglect, h_neglect_edge)
@@ -1179,10 +1193,12 @@ subroutine apply_oda_tracer_increments(Time, G, GV, tv, h, CS)
   if (CS%id_inc_s > 0) call post_data(CS%id_inc_s, S_tend_inc, CS%diag_CS)
   if (CS%id_inc_t_z > 0) call post_data(CS%id_inc_t_z, T_tend, CS%diag_CS)
   if (CS%id_inc_s_z > 0) call post_data(CS%id_inc_s_z, S_tend, CS%diag_CS)
-  if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
+  if (CS%do_T_ml_bias_adjustment) then
     if (CS%id_inc_ml_t > 0) call post_data(CS%id_inc_ml_t, T_ml_tend_inc, CS%diag_CS)
-    if (CS%id_inc_ml_s > 0) call post_data(CS%id_inc_ml_s, S_ml_tend_inc, CS%diag_CS)
     if (CS%id_inc_ml_t_z > 0) call post_data(CS%id_inc_ml_t_z, CS%T_ml_tend, CS%diag_CS)
+  endif
+  if (CS%do_S_ml_bias_adjustment) then
+    if (CS%id_inc_ml_s > 0) call post_data(CS%id_inc_ml_s, S_ml_tend_inc, CS%diag_CS)
     if (CS%id_inc_ml_s_z > 0) call post_data(CS%id_inc_ml_s_z, CS%S_ml_tend, CS%diag_CS)
   endif
   call disable_averaging(CS%diag_CS)
