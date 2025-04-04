@@ -155,7 +155,7 @@ use MOM_wave_interface,        only : Update_Stokes_Drift
 use MOM_database_comms,       only : dbcomms_CS_type, database_comms_init, dbclient_type
 
 ! ODA modules
-use MOM_oda_driver_mod,        only : ODA_CS, oda, init_oda, oda_end
+use MOM_oda_driver_mod,        only : ODA_CS, oda, init_oda, oda_end, set_oda_restart_fields, init_oda_diags
 use MOM_oda_driver_mod,        only : set_prior_tracer, set_analysis_time, apply_oda_tracer_increments
 use MOM_oda_incupd,            only : oda_incupd_CS, init_oda_incupd_diags
 
@@ -2869,6 +2869,11 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
     call register_diabatic_restarts(G, US, param_file, CS%int_tide_CSp, restart_CSp)
   endif
 
+  if (CS%ensemble_ocean) then
+    call init_oda(Time, G, GV, US, CS%odaCS)
+    call set_oda_restart_fields(US, CS%odaCS, restart_CSp)
+  endif
+  
   call callTree_waypoint("restart registration complete (initialize_MOM)")
   call restart_registry_lock(restart_CSp)
 
@@ -3183,6 +3188,10 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
   ! Register the volume cell measure (must be one of first diagnostics)
   call register_cell_measure(G, CS%diag, Time)
 
+  if (CS%ensemble_ocean) then
+    call init_oda_diags(Time, US, CS%diag, CS%odaCS)
+  endif
+
   call cpu_clock_begin(id_clock_MOM_init)
   ! Diagnose static fields AND associate areas/volumes with axes
   call write_static_fields(G, GV, US, CS%tv, CS%diag)
@@ -3382,11 +3391,6 @@ subroutine initialize_MOM(Time, Time_init, param_file, dirs, CS, &
   CS%write_IC = save_IC .and. &
                 .not.((dirs%input_filename(1:1) == 'r') .and. &
                       (LEN_TRIM(dirs%input_filename) == 1))
-
-  if (CS%ensemble_ocean) then
-    call init_oda(Time, G, GV, US, CS%diag, CS%odaCS)
-    call set_analysis_time(CS%Time,CS%odaCS)
-  endif
 
   ! initialize stochastic physics
   call stochastics_init(CS%dt_therm, CS%G, CS%GV, CS%stoch_CS, param_file, diag, Time)

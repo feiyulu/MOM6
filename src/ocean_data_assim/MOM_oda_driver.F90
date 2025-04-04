@@ -25,6 +25,8 @@ use MOM_time_manager, only : operator(+), operator(>=), operator(/=)
 use MOM_time_manager, only : operator(==), operator(<)
 use MOM_cpu_clock, only : cpu_clock_begin, cpu_clock_end, cpu_clock_id
 use MOM_horizontal_regridding, only : horiz_interp_and_extrap_tracer
+use MOM_restart,              only : MOM_restart_CS, register_restart_field
+
 ! ODA Modules
 use ocean_da_types_mod, only : grid_type, ocean_profile_type
 use ocean_da_types_mod, only : ensemble_control_struct, ocean_control_struct
@@ -68,6 +70,7 @@ implicit none ; private
 
 public :: init_oda, oda_end, set_prior_tracer, get_posterior_tracer
 public :: set_analysis_time, oda, apply_oda_tracer_increments
+public :: set_oda_restart_fields, init_oda_diags
 
 !>@{ CPU time clock ID
 integer :: id_clock_oda_init
@@ -193,13 +196,13 @@ contains
 
 !> initialize First_guess (prior) and Analysis grid
 !! information for all ensemble members
-subroutine init_oda(Time, G, GV, US, diag_CS, CS)
+subroutine init_oda(Time, G, GV, US, CS)
 
   type(time_type), intent(in) :: Time !< The current model time.
   type(ocean_grid_type), pointer, intent(in) :: G !< domain and grid information for ocean model
   type(verticalGrid_type), pointer, intent(in) :: GV   !< The ocean's vertical grid structure
   type(unit_scale_type),   intent(in) :: US   !< A dimensional unit scaling type
-  type(diag_ctrl), target, intent(inout) :: diag_CS !< A pointer to a diagnostic control structure
+  ! type(diag_ctrl), target, intent(inout) :: diag_CS !< A pointer to a diagnostic control structure
   type(ODA_CS), pointer, intent(inout) :: CS  !< The DA control structure
 
 ! Local variables
@@ -224,7 +227,8 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
   character(len=80) :: bias_correction_file, inc_file
   integer :: default_answer_date  ! The default setting for the various ANSWER_DATE flags.
   character(len=160) :: mesg
-
+  integer :: yr, mon, day, hr, min, sec
+  
   if (associated(CS)) call MOM_error(FATAL, 'Calling oda_init with associated control structure')
   allocate(CS)
 
@@ -420,6 +424,83 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
     call MOM_read_data(basin_file, basin_var, CS%oda_grid%basin_mask, CS%Grid%domain, timelevel=1)
   endif
 
+  if (.not. associated(CS%h)) then
+    allocate(CS%h(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=CS%GV%Angstrom_H)
+    ! assign thicknesses
+    call ALE_initThicknessToCoord(CS%ALE_CS, G, CS%GV, CS%h)
+  endif
+
+  !!  get global grid information from ocean model needed for ODA initialization
+  T_grid => NULL()
+  call set_up_global_tgrid(T_grid, CS, G)
+
+  call ocean_da_core_init(CS%mpp_domain, T_grid, CS%Profiles, Time)
+  deallocate(T_grid)
+  CS%Time = Time
+  CS%Prior_Time = Time
+  CS%Apply_Time = Time
+  call get_date(Time, yr, mon, day, hr, min, sec)
+  write(mesg,*)  'Model Time: ', yr, mon, day, hr, min, sec
+  call MOM_mesg("ODA_INIT: "//trim(mesg))
+
+  !! switch back to ensemble member pelist
+  call set_PElist(CS%ensemble_pelist(CS%ensemble_id,:))
+
+  allocate(CS%Ocean_background_ave)
+  call init_ocean_background(CS,CS%Ocean_background_ave,G,CS%GV)
+  CS%prior_ave_counter = CS%assim_interval / CS%prior_interval
+
+  allocate(CS%T_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
+  allocate(CS%S_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
+
+  if (CS%do_T_bias_adjustment .or. CS%do_S_bias_adjustment) then
+    call get_param(PF, mdl, "TEMP_SALT_ADJUSTMENT_FILE", bias_correction_file,  &
+                "The name of the file containing temperature and salinity "//&
+                "tendency adjustments", default='temp_salt_adjustment.nc')
+
+    inc_file = trim(inputdir) // trim(bias_correction_file)
+    CS%INC_CS%T = init_extern_field(inc_file, "temp_increment", &
+          correct_leap_year_inconsistency=.true.,verbose=.true.,domain=G%Domain%mpp_domain)
+    CS%INC_CS%S = init_extern_field(inc_file, "salt_increment", &
+          correct_leap_year_inconsistency=.true.,verbose=.true.,domain=G%Domain%mpp_domain)
+    call get_external_field_info(CS%INC_CS%T, size=fld_sz)
+    CS%INC_CS%fldno = 2
+    if (CS%nk /= fld_sz(3)) call MOM_error(FATAL,'Increment levels /= ODA levels')
+
+    allocate(CS%T_bc_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
+    allocate(CS%S_bc_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
+
+  endif
+
+  if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
+
+    allocate(CS%ml_data)
+    allocate(CS%ml_config)
+    call oda_ml_init(CS%ml_config, CS%ml_data, CS%GV)
+
+    allocate(CS%T_ml_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
+    allocate(CS%S_ml_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
+
+  endif
+
+  call cpu_clock_end(id_clock_oda_init)
+
+!  if (CS%write_obs) then
+!    temp_fid = open_profile_file("temp_"//trim(obs_file))
+!    salt_fid = open_profile_file("salt_"//trim(obs_file))
+!  end if
+
+end subroutine init_oda
+
+subroutine init_oda_diags(Time, US, diag_CS, CS)
+
+  type(time_type), intent(in) :: Time !< The current model time.
+  type(unit_scale_type),   intent(in) :: US   !< A dimensional unit scaling type
+  type(diag_ctrl), target, intent(inout) :: diag_CS !< A pointer to a diagnostic control structure
+  type(ODA_CS), pointer, intent(inout) :: CS  !< The DA control structure
+
+  call cpu_clock_begin(id_clock_oda_init)
+
   ! set up diag variables for analysis increments
   CS%diag_CS => diag_CS
 
@@ -471,59 +552,7 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
   CS%id_prior_sensible = register_diag_field('ocean_model', 'sensible_prior', diag_CS%axesT1, &
     Time, 'Accumulated sensible heat flux into ocean for DA/ML', 'W m-2', conversion=US%QRZ_T_to_W_m2)
 
-  ! isd = G%isd; ied = G%ied; jsd = G%jsd; jed = G%jed
-
-  if (.not. associated(CS%h)) then
-    allocate(CS%h(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=CS%GV%Angstrom_H)
-    ! assign thicknesses
-    call ALE_initThicknessToCoord(CS%ALE_CS, G, CS%GV, CS%h)
-  endif
-
-  !!  get global grid information from ocean model needed for ODA initialization
-  T_grid => NULL()
-  call set_up_global_tgrid(T_grid, CS, G)
-
-  call ocean_da_core_init(CS%mpp_domain, T_grid, CS%Profiles, Time)
-  deallocate(T_grid)
-  CS%Time = Time
-  CS%Prior_Time = Time
-  CS%Apply_Time = Time
-  
-  !! switch back to ensemble member pelist
-  call set_PElist(CS%ensemble_pelist(CS%ensemble_id,:))
-
-  allocate(CS%Ocean_background_ave)
-  call init_ocean_background(CS%Ocean_background_ave,G,CS%GV)
-  CS%prior_ave_counter = 0.0
-
-  allocate(CS%T_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
-  allocate(CS%S_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
-
-  if (CS%do_T_bias_adjustment .or. CS%do_S_bias_adjustment) then
-    call get_param(PF, mdl, "TEMP_SALT_ADJUSTMENT_FILE", bias_correction_file,  &
-                "The name of the file containing temperature and salinity "//&
-                "tendency adjustments", default='temp_salt_adjustment.nc')
-
-    inc_file = trim(inputdir) // trim(bias_correction_file)
-    CS%INC_CS%T = init_extern_field(inc_file, "temp_increment", &
-          correct_leap_year_inconsistency=.true.,verbose=.true.,domain=G%Domain%mpp_domain)
-    CS%INC_CS%S = init_extern_field(inc_file, "salt_increment", &
-          correct_leap_year_inconsistency=.true.,verbose=.true.,domain=G%Domain%mpp_domain)
-    call get_external_field_info(CS%INC_CS%T, size=fld_sz)
-    CS%INC_CS%fldno = 2
-    if (CS%nk /= fld_sz(3)) call MOM_error(FATAL,'Increment levels /= ODA levels')
-
-    allocate(CS%T_bc_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
-    allocate(CS%S_bc_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
-
-  endif
-
   if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
-
-    allocate(CS%ml_data)
-    allocate(CS%ml_config)
-    call oda_ml_init(CS%ml_config, CS%ml_data, CS%GV)
-
     if (CS%do_T_ml_bias_adjustment) then
       CS%id_inc_ml_t = register_diag_field('ocean_model', 'temp_ml_increment', diag_CS%axesTL, &
         Time, 'Ocean potential temperature increments predicted by ML', 'degC', conversion=US%C_to_degC)
@@ -537,20 +566,11 @@ subroutine init_oda(Time, G, GV, US, diag_CS, CS)
       CS%id_inc_ml_s_z = register_diag_field('ocean_model', 'salt_ml_increment_z', diag_CS%axesTZ, &
         Time, 'Ocean salinity increments predicted by ML', 'psu', conversion=US%S_to_ppt)
     endif
-
-    allocate(CS%T_ml_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
-    allocate(CS%S_ml_tend(G%isd:G%ied,G%jsd:G%jed,CS%GV%ke), source=0.0)
-
   endif
 
   call cpu_clock_end(id_clock_oda_init)
 
-!  if (CS%write_obs) then
-!    temp_fid = open_profile_file("temp_"//trim(obs_file))
-!    salt_fid = open_profile_file("salt_"//trim(obs_file))
-!  end if
-
-end subroutine init_oda
+end subroutine init_oda_diags
 
 !> Copy ensemble member tracers to ensemble vector.
 subroutine set_prior_tracer(Time, G, GV, h, tv, model_u, model_v, model_ssh, fluxes, forces, CS)
@@ -586,10 +606,6 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, model_u, model_v, model_ssh, flu
   if (.not. associated(CS%Grid)) call MOM_ERROR(FATAL,'ODA_CS ensemble horizontal grid not associated')
   if (.not. associated(CS%GV)) call MOM_ERROR(FATAL,'ODA_CS ensemble vertical grid not associated')
 
-  !! switch to global pelist
-  ! call set_PElist(CS%filter_pelist)
-  !call MOM_mesg('Setting prior')
-
   if (CS%answer_date >= 20190101) then
     h_neglect = GV%H_subroundoff ; h_neglect_edge = GV%H_subroundoff
   elseif (GV%Boussinesq) then
@@ -622,41 +638,51 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, model_u, model_v, model_ssh, flu
   if (CS%prior_ave_counter < 0.5) then
     CS%Ocean_background_ave%T = 0.0
     CS%Ocean_background_ave%S = 0.0
-    CS%Ocean_background_ave%U = 0.0
-    CS%Ocean_background_ave%V = 0.0
     CS%Ocean_background_ave%SSH = 0.0
-    CS%Ocean_background_ave%taux = 0.0
-    CS%Ocean_background_ave%tauy = 0.0
-    CS%Ocean_background_ave%latent = 0.0
-    CS%Ocean_background_ave%sensible = 0.0
-    CS%Ocean_background_ave%lw = 0.0
-    CS%Ocean_background_ave%sw = 0.0
+
+    if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
+      CS%Ocean_background_ave%U = 0.0
+      CS%Ocean_background_ave%V = 0.0
+      CS%Ocean_background_ave%taux = 0.0
+      CS%Ocean_background_ave%tauy = 0.0
+      CS%Ocean_background_ave%latent = 0.0
+      CS%Ocean_background_ave%sensible = 0.0
+      CS%Ocean_background_ave%lw = 0.0
+      CS%Ocean_background_ave%sw = 0.0
+    endif
+
     call MOM_mesg("ODA Reset background accumulation")
   endif
   
   CS%Ocean_background_ave%T(isc:iec,jsc:jec,:) = CS%Ocean_background_ave%T(isc:iec,jsc:jec,:) + T(isc:iec,jsc:jec,:)
   CS%Ocean_background_ave%S(isc:iec,jsc:jec,:) = CS%Ocean_background_ave%S(isc:iec,jsc:jec,:) + S(isc:iec,jsc:jec,:)
-  CS%Ocean_background_ave%U(iscB:iecB,jsc:jec,:) = CS%Ocean_background_ave%U(iscB:iecB,jsc:jec,:) + U(iscB:iecB,jsc:jec,:)
-  CS%Ocean_background_ave%V(isc:iec,jscB:jecB,:) = CS%Ocean_background_ave%V(isc:iec,jscB:jecB,:) + V(isc:iec,jscB:jecB,:)
   CS%Ocean_background_ave%SSH(isc:iec,jsc:jec) = CS%Ocean_background_ave%SSH(isc:iec,jsc:jec) + model_ssh(isc:iec,jsc:jec)
-  CS%Ocean_background_ave%taux(iscB:iecB,jsc:jec) = CS%Ocean_background_ave%taux(iscB:iecB,jsc:jec) + forces%taux(iscB:iecB,jsc:jec)
-  CS%Ocean_background_ave%tauy(isc:iec,jscB:jecB) = CS%Ocean_background_ave%tauy(isc:iec,jscB:jecB) + forces%tauy(isc:iec,jscB:jecB)
-  CS%Ocean_background_ave%latent(isc:iec,jsc:jec) = CS%Ocean_background_ave%latent(isc:iec,jsc:jec) + fluxes%latent(isc:iec,jsc:jec)
-  CS%Ocean_background_ave%sensible(isc:iec,jsc:jec) = CS%Ocean_background_ave%sensible(isc:iec,jsc:jec) + fluxes%sens(isc:iec,jsc:jec)
-  CS%Ocean_background_ave%lw(isc:iec,jsc:jec) = CS%Ocean_background_ave%lw(isc:iec,jsc:jec) + fluxes%lw(isc:iec,jsc:jec)
-  CS%Ocean_background_ave%sw(isc:iec,jsc:jec) = CS%Ocean_background_ave%sw(isc:iec,jsc:jec) + fluxes%sw(isc:iec,jsc:jec)
-  
+
+  if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
+    CS%Ocean_background_ave%U(iscB:iecB,jsc:jec,:) = CS%Ocean_background_ave%U(iscB:iecB,jsc:jec,:) + U(iscB:iecB,jsc:jec,:)
+    CS%Ocean_background_ave%V(isc:iec,jscB:jecB,:) = CS%Ocean_background_ave%V(isc:iec,jscB:jecB,:) + V(isc:iec,jscB:jecB,:)
+    CS%Ocean_background_ave%taux(iscB:iecB,jsc:jec) = CS%Ocean_background_ave%taux(iscB:iecB,jsc:jec) + forces%taux(iscB:iecB,jsc:jec)
+    CS%Ocean_background_ave%tauy(isc:iec,jscB:jecB) = CS%Ocean_background_ave%tauy(isc:iec,jscB:jecB) + forces%tauy(isc:iec,jscB:jecB)
+    CS%Ocean_background_ave%latent(isc:iec,jsc:jec) = CS%Ocean_background_ave%latent(isc:iec,jsc:jec) + fluxes%latent(isc:iec,jsc:jec)
+    CS%Ocean_background_ave%sensible(isc:iec,jsc:jec) = CS%Ocean_background_ave%sensible(isc:iec,jsc:jec) + fluxes%sens(isc:iec,jsc:jec)
+    CS%Ocean_background_ave%lw(isc:iec,jsc:jec) = CS%Ocean_background_ave%lw(isc:iec,jsc:jec) + fluxes%lw(isc:iec,jsc:jec)
+    CS%Ocean_background_ave%sw(isc:iec,jsc:jec) = CS%Ocean_background_ave%sw(isc:iec,jsc:jec) + fluxes%sw(isc:iec,jsc:jec)
+  endif
+
   call pass_var(CS%Ocean_background_ave%T,G%Domain)
   call pass_var(CS%Ocean_background_ave%S,G%Domain)
-  call pass_var(CS%Ocean_background_ave%U,G%Domain)
-  call pass_var(CS%Ocean_background_ave%V,G%Domain)
   call pass_var(CS%Ocean_background_ave%SSH,G%Domain)
-  call pass_var(CS%Ocean_background_ave%taux,G%Domain)
-  call pass_var(CS%Ocean_background_ave%tauy,G%Domain)
-  call pass_var(CS%Ocean_background_ave%latent,G%Domain)
-  call pass_var(CS%Ocean_background_ave%sensible,G%Domain)
-  call pass_var(CS%Ocean_background_ave%lw,G%Domain)
-  call pass_var(CS%Ocean_background_ave%sw,G%Domain)
+
+  if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
+    call pass_var(CS%Ocean_background_ave%U,G%Domain)
+    call pass_var(CS%Ocean_background_ave%V,G%Domain)
+    call pass_var(CS%Ocean_background_ave%taux,G%Domain)
+    call pass_var(CS%Ocean_background_ave%tauy,G%Domain)
+    call pass_var(CS%Ocean_background_ave%latent,G%Domain)
+    call pass_var(CS%Ocean_background_ave%sensible,G%Domain)
+    call pass_var(CS%Ocean_background_ave%lw,G%Domain)
+    call pass_var(CS%Ocean_background_ave%sw,G%Domain)
+  endif
 
   CS%prior_ave_counter = CS%prior_ave_counter + 1.0
 
@@ -694,11 +720,6 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, model_u, model_v, model_ssh, flu
   if (CS%id_prior_sw > 0) call post_data(CS%id_prior_sw, fluxes%sw, CS%diag_CS)
   
   call disable_averaging(CS%diag_CS)
-
-  ! call enable_averaging(CS%prior_interval, CS%Prior_Time, CS%diag_CS)
-  ! if (CS%id_prior_t > 0) call post_data(CS%id_prior_t, T, CS%diag_CS)
-  ! if (CS%id_prior_s > 0) call post_data(CS%id_prior_s, S, CS%diag_CS)
-  ! call disable_averaging(CS%diag_CS)
 
   call cpu_clock_end(id_clock_get_prior)
   
@@ -759,12 +780,6 @@ subroutine get_posterior_tracer(Time, CS, increment)
   CS%T_tend = CS%T_tend / (CS%assim_interval)
   CS%S_tend = CS%S_tend / (CS%assim_interval)
 
-  ! Time_Next = CS%Time + real_to_time(CS%US%T_to_s*(CS%assim_interval))
-  ! call enable_averaging(CS%assim_interval, Time_Next, CS%diag_CS)
-  ! if (CS%id_inc_t_z > 0) call post_data(CS%id_inc_t_z, CS%T_tend, CS%diag_CS)
-  ! if (CS%id_inc_s_z > 0) call post_data(CS%id_inc_s_z, CS%S_tend, CS%diag_CS)
-  ! call disable_averaging(CS%diag_CS)
-
 end subroutine get_posterior_tracer
 
 !> Gather observations and call ODA routines
@@ -787,27 +802,31 @@ subroutine oda(Time, CS)
 
     CS%Ocean_background_ave%T = CS%Ocean_background_ave%T / (CS%prior_ave_counter)
     CS%Ocean_background_ave%S = CS%Ocean_background_ave%S / (CS%prior_ave_counter)
-    CS%Ocean_background_ave%U = CS%Ocean_background_ave%U / (CS%prior_ave_counter)
-    CS%Ocean_background_ave%V = CS%Ocean_background_ave%V / (CS%prior_ave_counter)
     CS%Ocean_background_ave%SSH = CS%Ocean_background_ave%SSH / (CS%prior_ave_counter)
-    CS%Ocean_background_ave%taux = CS%Ocean_background_ave%taux / (CS%prior_ave_counter)
-    CS%Ocean_background_ave%tauy = CS%Ocean_background_ave%tauy / (CS%prior_ave_counter)
-    CS%Ocean_background_ave%latent = CS%Ocean_background_ave%latent / (CS%prior_ave_counter)
-    CS%Ocean_background_ave%sensible = CS%Ocean_background_ave%sensible / (CS%prior_ave_counter)
-    CS%Ocean_background_ave%lw = CS%Ocean_background_ave%lw / (CS%prior_ave_counter)
-    CS%Ocean_background_ave%sw = CS%Ocean_background_ave%sw / (CS%prior_ave_counter)
+    if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
+      CS%Ocean_background_ave%U = CS%Ocean_background_ave%U / (CS%prior_ave_counter)
+      CS%Ocean_background_ave%V = CS%Ocean_background_ave%V / (CS%prior_ave_counter)
+      CS%Ocean_background_ave%taux = CS%Ocean_background_ave%taux / (CS%prior_ave_counter)
+      CS%Ocean_background_ave%tauy = CS%Ocean_background_ave%tauy / (CS%prior_ave_counter)
+      CS%Ocean_background_ave%latent = CS%Ocean_background_ave%latent / (CS%prior_ave_counter)
+      CS%Ocean_background_ave%sensible = CS%Ocean_background_ave%sensible / (CS%prior_ave_counter)
+      CS%Ocean_background_ave%lw = CS%Ocean_background_ave%lw / (CS%prior_ave_counter)
+      CS%Ocean_background_ave%sw = CS%Ocean_background_ave%sw / (CS%prior_ave_counter)
+    endif
 
     call pass_var(CS%Ocean_background_ave%T,CS%model_G%Domain)
     call pass_var(CS%Ocean_background_ave%S,CS%model_G%Domain)
-    call pass_var(CS%Ocean_background_ave%U,CS%model_G%Domain)
-    call pass_var(CS%Ocean_background_ave%V,CS%model_G%Domain)
     call pass_var(CS%Ocean_background_ave%SSH,CS%model_G%Domain)
-    call pass_var(CS%Ocean_background_ave%taux,CS%model_G%Domain)
-    call pass_var(CS%Ocean_background_ave%tauy,CS%model_G%Domain)
-    call pass_var(CS%Ocean_background_ave%latent,CS%model_G%Domain)
-    call pass_var(CS%Ocean_background_ave%sensible,CS%model_G%Domain)
-    call pass_var(CS%Ocean_background_ave%lw,CS%model_G%Domain)
-    call pass_var(CS%Ocean_background_ave%sw,CS%model_G%Domain)
+    if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
+      call pass_var(CS%Ocean_background_ave%U,CS%model_G%Domain)
+      call pass_var(CS%Ocean_background_ave%V,CS%model_G%Domain)
+      call pass_var(CS%Ocean_background_ave%taux,CS%model_G%Domain)
+      call pass_var(CS%Ocean_background_ave%tauy,CS%model_G%Domain)
+      call pass_var(CS%Ocean_background_ave%latent,CS%model_G%Domain)
+      call pass_var(CS%Ocean_background_ave%sensible,CS%model_G%Domain)
+      call pass_var(CS%Ocean_background_ave%lw,CS%model_G%Domain)
+      call pass_var(CS%Ocean_background_ave%sw,CS%model_G%Domain)
+    endif
     
     CS%prior_ave_counter = 0.0
 
@@ -1019,15 +1038,14 @@ subroutine init_ocean_ensemble(CS,Grid,GV,ens_size)
   allocate(CS%T(isd:ied,jsd:jed,nk,ens_size),source=0.0)
   allocate(CS%S(isd:ied,jsd:jed,nk,ens_size),source=0.0)
   allocate(CS%SSH(isd:ied,jsd:jed,ens_size),source=0.0)
-  ! allocate(CS%U(isdB:iedB,jsd:jed,nk,ens_size),source=0.0)
-  ! allocate(CS%V(isd:ied,jsdB:jedB,nk,ens_size),source=0.0)
 
   return
 end subroutine init_ocean_ensemble
 
 !> Initialize background variables
-subroutine init_ocean_background(CS,Grid,GV)
-  type(ocean_control_struct), pointer :: CS !< Pointer to ODA control structure
+subroutine init_ocean_background(CS,PriorCS,Grid,GV)
+  type(ODA_CS), pointer, intent(inout) :: CS !< the DA control structure
+  type(ocean_control_struct), pointer :: PriorCS !< Pointer to ODA control structure
   type(ocean_grid_type), pointer :: Grid !< Pointer to ocean analysis grid
   type(verticalGrid_type), pointer :: GV !< Pointer to DA vertical grid
 
@@ -1038,17 +1056,20 @@ subroutine init_ocean_background(CS,Grid,GV)
   isd  = Grid%isd ; ied  = Grid%ied  ; jsd  = Grid%jsd  ; jed  = Grid%jed
   isdB = Grid%isdB; iedB = Grid%iedB ; jsdB = Grid%jsdB ; jedB = Grid%jedB
 
-  allocate(CS%T(isd:ied,jsd:jed,nk),source=0.0)
-  allocate(CS%S(isd:ied,jsd:jed,nk),source=0.0)
-  allocate(CS%SSH(isd:ied,jsd:jed),source=0.0)
-  allocate(CS%U(isdB:iedB,jsd:jed,nk),source=0.0)
-  allocate(CS%V(isd:ied,jsdB:jedB,nk),source=0.0)
-  allocate(CS%taux(isdB:iedB,jsd:jed),source=0.0)
-  allocate(CS%tauy(isd:ied,jsdB:jedB),source=0.0)
-  allocate(CS%latent(isd:ied,jsd:jed),source=0.0)
-  allocate(CS%sensible(isd:ied,jsd:jed),source=0.0)
-  allocate(CS%lw(isd:ied,jsd:jed),source=0.0)
-  allocate(CS%sw(isd:ied,jsd:jed),source=0.0)
+  allocate(PriorCS%T(isd:ied,jsd:jed,nk),source=0.0)
+  allocate(PriorCS%S(isd:ied,jsd:jed,nk),source=0.0)
+  allocate(PriorCS%SSH(isd:ied,jsd:jed),source=0.0)
+  
+  if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
+    allocate(PriorCS%U(isdB:iedB,jsd:jed,nk),source=0.0)
+    allocate(PriorCS%V(isd:ied,jsdB:jedB,nk),source=0.0)
+    allocate(PriorCS%taux(isdB:iedB,jsd:jed),source=0.0)
+    allocate(PriorCS%tauy(isd:ied,jsdB:jedB),source=0.0)
+    allocate(PriorCS%latent(isd:ied,jsd:jed),source=0.0)
+    allocate(PriorCS%sensible(isd:ied,jsd:jed),source=0.0)
+    allocate(PriorCS%lw(isd:ied,jsd:jed),source=0.0)
+    allocate(PriorCS%sw(isd:ied,jsd:jed),source=0.0)
+  endif
 
   return
 end subroutine init_ocean_background
@@ -1150,9 +1171,6 @@ subroutine apply_oda_tracer_increments(Time, G, GV, tv, h, CS)
   endif
 
   isc=G%isc; iec=G%iec; jsc=G%jsc; jec=G%jec
-  write(mesg,*) 'indices: ', isc, iec, jsc, jec
-  call MOM_mesg("apply_oda_tracer_increments: "//trim(mesg))
-
   do j=jsc,jec; do i=isc,iec
     call remapping_core_h(CS%remapCS, CS%nk, CS%h(i,j,:), T_tend(i,j,:), &
          G%ke, h(i,j,:), T_tend_inc(i,j,:), h_neglect, h_neglect_edge)
@@ -1257,6 +1275,64 @@ end subroutine apply_oda_tracer_increments
     deallocate(global2D)
     deallocate(global2D_old)
   end subroutine set_up_global_tgrid
+
+  subroutine set_oda_restart_fields(US, CS, restart_CSp)
+    ! type(verticalGrid_type),  intent(inout) :: GV         !< ocean vertical grid structure
+    type(unit_scale_type),    intent(inout) :: US         !< A dimensional unit scaling type
+    ! type(param_file_type),    intent(in) :: param_file    !< opened file for parsing to get parameters
+    type(ODA_CS),             intent(in) :: CS            !< control structure set up by initialize_MOM
+    type(MOM_restart_CS),     pointer    :: restart_CSp   !< pointer to the restart control
+                                                          !! structure that will be used for MOM.
+    ! Local variables
+
+    if (associated(CS%Ocean_background_ave%T)) &
+      call register_restart_field(CS%Ocean_background_ave%T, "Temp_prior", .false., restart_CSp, &
+                                  "Accumulated Potential Temperature", "degC", conversion=US%C_to_degC)
+
+    if (associated(CS%Ocean_background_ave%S)) &
+      call register_restart_field(CS%Ocean_background_ave%S, "Salt_prior", .false., restart_CSp, &
+                                  "Accumulated Salinity", "PPT", conversion=US%S_to_ppt)
+
+    if (associated(CS%Ocean_background_ave%SSH)) &
+      call register_restart_field(CS%Ocean_background_ave%SSH, "SSH_prior", .false., restart_CSp, &
+                                  "Accumulated SSH", 'm', conversion=US%Z_to_m)
+                                  
+    if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
+
+      if (associated(CS%Ocean_background_ave%U)) &
+        call register_restart_field(CS%Ocean_background_ave%U, "u_prior", .false., restart_CSp, &
+                                    "Accumulated Zonal Velocity", "m s-1", conversion=US%L_T_to_m_s)
+
+      if (associated(CS%Ocean_background_ave%V)) &
+        call register_restart_field(CS%Ocean_background_ave%V, "v_prior", .false., restart_CSp, &
+                                    "Accumulated Meridional Velocity", "m s-1", conversion=US%L_T_to_m_s)
+
+      if (associated(CS%Ocean_background_ave%taux)) &
+        call register_restart_field(CS%Ocean_background_ave%taux, "taux_prior", .false., restart_CSp, &
+                                    "Accumulated zonal surface stress", 'Pa', conversion=US%RLZ_T2_to_Pa)
+
+      if (associated(CS%Ocean_background_ave%tauy)) &
+        call register_restart_field(CS%Ocean_background_ave%tauy, "tauy_prior", .false., restart_CSp, &
+                                    "Accumulated meridional surface stress", 'Pa', conversion=US%RLZ_T2_to_Pa)
+
+      if (associated(CS%Ocean_background_ave%latent)) &
+        call register_restart_field(CS%Ocean_background_ave%latent, "latent_prior", .false., restart_CSp, &
+                                    "Accumulated latent heat flux into ocean", 'W m-2', conversion=US%QRZ_T_to_W_m2)
+
+      if (associated(CS%Ocean_background_ave%sensible)) &
+        call register_restart_field(CS%Ocean_background_ave%sensible, "sensible_prior", .false., restart_CSp, &
+                                    "Accumulated sensible heat flux into ocean", 'W m-2', conversion=US%QRZ_T_to_W_m2)
+                                    
+      if (associated(CS%Ocean_background_ave%lw)) &
+        call register_restart_field(CS%Ocean_background_ave%lw, "LW_prior", .false., restart_CSp, &
+                                    "Accumulated longwave radiation flux into ocean", 'W m-2', conversion=US%QRZ_T_to_W_m2)
+
+      if (associated(CS%Ocean_background_ave%sw)) &
+        call register_restart_field(CS%Ocean_background_ave%sw, "SW_prior", .false., restart_CSp, &
+                                    "Accumulated shortwave radiation flux into ocean", 'W m-2', conversion=US%QRZ_T_to_W_m2)
+    endif
+
+  end subroutine set_oda_restart_fields
 
 !> \namespace MOM_oda_driver_mod
 !!
