@@ -12,7 +12,7 @@ use netcdf, only : nf90_nowrite, nf90_noerr
 
 implicit none ; private
 
-public :: oda_ml_init, oda_ml_end, oda_ml_inference
+public :: oda_ml_init, oda_ml_end, oda_ml_inference, oda_mld_index
 
 ! Data structure to save the ML configuration, input, and output data
 type, public :: ocean_oda_ml_config ; private
@@ -276,6 +276,70 @@ contains
         ml_data%S_inc=0.0
 
     end subroutine oda_ml_inference
+
+    subroutine oda_mld_index(nk,T,S,bathyT,z_l,MLD_index)
+        integer, intent(in) :: nk
+        real, dimension(nk), intent(in) :: T
+        real, dimension(nk), intent(in) :: S
+        real, dimension(nk), intent(in) :: z_l
+        real, intent(in) :: bathyT
+        real, intent(inout) :: MLD_index
+
+
+        real :: SA, PT, CT, PRHO
+        real, dimension(nk) :: PRHO_profile
+        real :: PRHO_mld, PRHO_10m 
+        real :: mld_depth
+        integer :: zl_index_mld, zl_index10m, zl_index_3mld, right_index
+        integer :: zz, i
+
+        PRHO_profile = 0.0
+        do zz  = 1, nk
+            if(z_l(zz) < bathyT) then
+                SA = S(zz)
+                PT = T(zz)
+                CT = gsw_ct_from_pt(SA, PT)
+                PRHO = gsw_sigma0(SA, CT)
+                PRHO_profile(zz) = PRHO
+            endif
+        end do
+
+        ! find 3 MLD
+        ! first find the first index below 10m
+        call find_right_index(z_l, reference_depth, bathyT, z_l, zl_index10m)
+        ! if zl_index10m is not found or it is 1, set mld_depth to be bathyT, so that the ml inference will not be done
+        if (zl_index10m <= 1) then
+            mld_depth = bathyT
+        else
+            ! the 10m potential density
+            call interpolate(z_l(zl_index10m-1),z_l(zl_index10m),PRHO_profile(zl_index10m-1), PRHO_profile(zl_index10m),reference_depth,PRHO_10m)
+            ! the MLD potential density
+            PRHO_mld = PRHO_10m + PRHO_change
+            ! the first z_l index below MLD
+            call find_right_index(PRHO_profile, PRHO_mld, bathyT, z_l, zl_index_mld)
+            ! if zl_index10m is not found or it is 1, set mld_depth to be bathyT, so that the ml inference will not be done
+            if (zl_index_mld <= 1) then
+                mld_depth = bathyT
+            else
+                ! the MLD depth
+                call interpolate(PRHO_profile(zl_index_mld-1),PRHO_profile(zl_index_mld),z_l(zl_index_mld-1),z_l(zl_index_mld),PRHO_mld,mld_depth)
+                ! the MLD must be below 10m
+                if (mld_depth < 10) then
+                    mld_depth = 10
+                end if
+            end if
+        end if
+
+        ! the first z_l index below 3MLD
+        call find_right_index(z_l(1:nk-1), 3*mld_depth, bathyT, z_l, zl_index_3mld)
+
+        if (zl_index_3mld == 0) then ! if 3 mld not found
+            MLD_index = 0.0
+        else
+            MLD_index = REAL(zl_index_3mld)/2
+        endif
+        
+    end subroutine oda_mld_index
 
     subroutine oda_ml_init(ml_config,ml_data,GV)
         type(ocean_oda_ml_config), pointer, intent(in) :: ml_config

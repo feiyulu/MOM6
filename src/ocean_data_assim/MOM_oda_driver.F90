@@ -33,6 +33,7 @@ use ocean_da_types_mod, only : ensemble_control_struct, ocean_control_struct
 use ocean_da_core_mod, only : ocean_da_core_init, get_profiles
 use MOM_oda_ml_mod, only: oda_ml_init, oda_ml_end, oda_ml_inference
 use MOM_oda_ml_mod, only: ocean_oda_ml_data, ocean_oda_ml_config
+use MOM_oda_ml_mod, only: oda_mld_index
 !This preprocessing directive enables the SPEAR online ensemble data assimilation
 !configuration. Existing community based APIs for data assimilation are currently
 !called offline for forecast applications using information read from a MOM6 state file.
@@ -393,7 +394,7 @@ subroutine init_oda(Time, G, GV, US, CS)
   ! initialize storage for prior and posterior
   if (.NOT. CS%assim_method == NO_ASSIM) then
     allocate(CS%Ocean_prior)
-    call init_ocean_ensemble(CS%Ocean_prior,CS%Grid,CS%GV,CS%ensemble_size)
+    call init_ocean_ensemble(CS%Ocean_prior,CS%Grid,CS%GV,CS%ensemble_size,MLD=.true.)
     allocate(CS%Ocean_posterior)
     call init_ocean_ensemble(CS%Ocean_posterior,CS%Grid,CS%GV,CS%ensemble_size)
     allocate(CS%Ocean_increment)
@@ -870,6 +871,8 @@ subroutine oda(Time, CS)
         call pass_var(CS%Ocean_prior%SSH(:,:,m),CS%Grid%domain)
       enddo
 
+      call get_MLD_index(CS%US, CS)
+
       #ifdef ENABLE_ECDA
         call ensemble_filter(CS%Ocean_prior, CS%Ocean_posterior, CS%CProfiles, CS%kdroot, CS%mpp_domain, CS%oda_grid)
       #endif
@@ -1014,6 +1017,49 @@ subroutine get_ML_bias_correction(Time, US, CS)
 
 end subroutine get_ML_bias_correction
 
+subroutine get_MLD_index(US, CS)
+  type(unit_scale_type), intent(in) :: US !< A dimensional unit scaling type
+  type(ODA_CS), pointer :: CS !< ocean DA control structure
+
+  ! Local variables
+  integer :: isc, iec, jsc, jec
+  integer :: i,j,m
+  character(len=160) :: mesg  ! The text of an error message
+  real, dimension(CS%nk) :: T, S
+
+  call MOM_mesg('Getting MLD for ODA')
+
+  isc=CS%Grid%isc; iec=CS%Grid%iec; jsc=CS%Grid%jsc; jec=CS%Grid%jec
+  !! Loop through all local gridpoints
+  do j=jsc,jec ; do i=isc,iec
+
+    if (CS%Grid%BathyT(i,j) > 10.0) then
+
+      do m=1,CS%ensemble_size
+        T = T + CS%Ocean_prior%T(i,j,:,m)
+        S = S + CS%Ocean_prior%S(i,j,:,m)
+      enddo
+      T = T / REAL(CS%ensemble_size)
+      S = S / REAL(CS%ensemble_size)
+
+      !! Call inference subroutine with the concatenated vector
+      call oda_mld_index(CS%nk,T,S,CS%Grid%BathyT(i,j),CS%GV%sLayer,CS%Ocean_prior%MLD_index(i,j))
+      
+      if (CS%Ocean_prior%MLD_index(i,j) > 25.0) CS%Ocean_prior%MLD_index(i,j) = 25.0
+      if (CS%Ocean_prior%MLD_index(i,j) < 5.0) CS%Ocean_prior%MLD_index(i,j) = 5.0
+
+    else
+
+      CS%Ocean_prior%MLD_index(i,j) = 0.0
+
+    endif
+
+  enddo; enddo
+
+  call pass_var(CS%Ocean_prior%MLD_index(:,:), CS%Grid%domain)
+
+end subroutine get_MLD_index
+
 !> Finalize DA module
 subroutine oda_end(CS)
   type(ODA_CS), intent(inout) :: CS !< the ocean DA control structure
@@ -1021,15 +1067,17 @@ subroutine oda_end(CS)
 end subroutine oda_end
 
 !> Initialize DA module
-subroutine init_ocean_ensemble(CS,Grid,GV,ens_size)
+subroutine init_ocean_ensemble(CS,Grid,GV,ens_size,MLD)
   type(ensemble_control_struct), pointer :: CS !< Pointer to ODA control structure
   type(ocean_grid_type), pointer :: Grid !< Pointer to ocean analysis grid
   type(verticalGrid_type), pointer :: GV !< Pointer to DA vertical grid
   integer, intent(in) :: ens_size !< ensemble size
+  logical, optional, intent(in) :: MLD !< True if MLD is used
 
   integer :: isd, ied, jsd, jed, nk, isdB, iedB, jsdB, jedB
   character(len=160) :: mesg  ! The text of an error message
-  
+  logical :: MLD_alloc
+
   nk=GV%ke
   isd  = Grid%isd ; ied  = Grid%ied  ; jsd  = Grid%jsd  ; jed  = Grid%jed
   isdB = Grid%isdB; iedB = Grid%iedB ; jsdB = Grid%jsdB ; jedB = Grid%jedB
@@ -1038,6 +1086,10 @@ subroutine init_ocean_ensemble(CS,Grid,GV,ens_size)
   allocate(CS%T(isd:ied,jsd:jed,nk,ens_size),source=0.0)
   allocate(CS%S(isd:ied,jsd:jed,nk,ens_size),source=0.0)
   allocate(CS%SSH(isd:ied,jsd:jed,ens_size),source=0.0)
+  MLD_alloc = .false. ; if (present(MLD)) MLD_alloc = MLD
+  if (MLD_alloc) then
+    allocate(CS%MLD_index(isd:ied,jsd:jed),source=0.0)
+  endif
 
   return
 end subroutine init_ocean_ensemble
