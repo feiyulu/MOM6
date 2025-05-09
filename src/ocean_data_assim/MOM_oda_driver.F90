@@ -28,6 +28,7 @@ use MOM_horizontal_regridding, only : horiz_interp_and_extrap_tracer
 use MOM_restart,              only : MOM_restart_CS, register_restart_field
 
 ! ODA Modules
+use mpp_domains_mod, only : mpp_get_data_domain,mpp_get_compute_domain,mpp_get_global_domain
 use ocean_da_types_mod, only : grid_type, ocean_profile_type
 use ocean_da_types_mod, only : ensemble_control_struct, ocean_control_struct
 use ocean_da_core_mod, only : ocean_da_core_init, get_profiles
@@ -101,8 +102,8 @@ type, public :: ODA_CS ; private
   real :: prior_ave_counter
   type(ensemble_control_struct), pointer :: Ocean_posterior=> NULL() !< ensemble ocean posterior states
                                                                   !! or increments to prior in DA space
-  type(ensemble_control_struct), pointer :: Ocean_increment=> NULL() !< A separate structure for
-                                                                  !! increment diagnostics
+  ! type(ensemble_control_struct), pointer :: Ocean_increment=> NULL() !< A separate structure for
+  !                                                                 !! increment diagnostics
   type(ocean_control_struct), pointer :: Ocean_background_ave=> NULL() !< ocean averaged prior states in model space
   type(ocean_oda_ml_data), pointer :: ml_data => NULL()
   type(ocean_oda_ml_config), pointer :: ml_config => NULL()
@@ -211,12 +212,12 @@ subroutine init_oda(Time, G, GV, US, CS)
   type(hor_index_type), pointer :: HI=> NULL()
   type(directories) :: dirs
 
-  type(grid_type), pointer :: T_grid !< global tracer grid
+  type(grid_type), pointer :: T_grid => NULL() !< global tracer grid
   type(param_file_type) :: PF
   integer :: n
   ! integer :: isd, ied, jsd, jed
-  integer :: is_oda, ie_oda, js_oda, je_oda
-  integer :: isd_oda, ied_oda, jsd_oda, jed_oda
+  ! integer :: is_oda, ie_oda, js_oda, je_oda
+  ! integer :: isd_oda, ied_oda, jsd_oda, jed_oda
   integer, dimension(4) :: fld_sz
   character(len=32) :: assim_method
   integer :: npes_pm, ens_info(6)
@@ -396,8 +397,8 @@ subroutine init_oda(Time, G, GV, US, CS)
     call init_ocean_ensemble(CS%Ocean_prior,CS%Grid,CS%GV,CS%ensemble_size)
     allocate(CS%Ocean_posterior)
     call init_ocean_ensemble(CS%Ocean_posterior,CS%Grid,CS%GV,CS%ensemble_size)
-    allocate(CS%Ocean_increment)
-    call init_ocean_ensemble(CS%Ocean_increment,CS%Grid,CS%GV,CS%ensemble_size)
+  !   allocate(CS%Ocean_increment)
+  !   call init_ocean_ensemble(CS%Ocean_increment,CS%Grid,CS%GV,CS%ensemble_size)
   endif
 
   call get_param(PF, 'oda_driver', "REGRIDDING_COORDINATE_MODE", coord_mode, &
@@ -419,8 +420,9 @@ subroutine init_oda(Time, G, GV, US, CS)
     call get_param(PF, 'oda_driver', "BASIN_VAR", basin_var, &
           "The basin mask variable in BASIN_FILE.", default="basin")
     ! Need different data domain indices for the ODA ensemble basin mask.
-    call get_domain_extent(CS%Grid%Domain,is_oda,ie_oda,js_oda,je_oda,isd_oda,ied_oda,jsd_oda,jed_oda)
-    allocate(CS%oda_grid%basin_mask(isd_oda:ied_oda,jsd_oda:jed_oda), source=0.0)
+    ! call get_domain_extent(CS%Grid%Domain,is_oda,ie_oda,js_oda,je_oda,isd_oda,ied_oda,jsd_oda,jed_oda)
+    ! allocate(CS%oda_grid%basin_mask(isd_oda:ied_oda,jsd_oda:jed_oda), source=0.0)
+    allocate(CS%oda_grid%basin_mask(CS%Grid%isd:CS%Grid%ied,CS%Grid%jsd:CS%Grid%jed), source=0.0)
     call MOM_read_data(basin_file, basin_var, CS%oda_grid%basin_mask, CS%Grid%domain, timelevel=1)
   endif
 
@@ -431,11 +433,10 @@ subroutine init_oda(Time, G, GV, US, CS)
   endif
 
   !!  get global grid information from ocean model needed for ODA initialization
-  T_grid => NULL()
   call set_up_global_tgrid(T_grid, CS, G)
-
   call ocean_da_core_init(CS%mpp_domain, T_grid, CS%Profiles, Time)
   deallocate(T_grid)
+
   CS%Time = Time
   CS%Prior_Time = Time
   CS%Apply_Time = Time
@@ -625,20 +626,20 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, model_u, model_v, model_ssh, flu
          CS%nk, CS%h(i,j,:), S(i,j,:), h_neglect, h_neglect_edge)
   enddo ; enddo
   ! remap U and V from the ensemble member to the analysis grid
-  do j=jsc,jec ; do i=iscB,iecB
-    call remapping_core_h(CS%remapCS, GV%ke, h(i,j,:), model_u(i,j,:), &
-         CS%nk, CS%h(i,j,:), U(i,j,:), h_neglect, h_neglect_edge)
-  enddo ; enddo
-  do j=jscB,jecB ; do i=isc,iec
-    call remapping_core_h(CS%remapCS, GV%ke, h(i,j,:), model_v(i,j,:), &
-         CS%nk, CS%h(i,j,:), V(i,j,:), h_neglect, h_neglect_edge)
-  enddo ; enddo
+  ! do j=jsc,jec ; do i=iscB,iecB
+  !   call remapping_core_h(CS%remapCS, GV%ke, h(i,j,:), model_u(i,j,:), &
+  !        CS%nk, CS%h(i,j,:), U(i,j,:), h_neglect, h_neglect_edge)
+  ! enddo ; enddo
+  ! do j=jscB,jecB ; do i=isc,iec
+  !   call remapping_core_h(CS%remapCS, GV%ke, h(i,j,:), model_v(i,j,:), &
+  !        CS%nk, CS%h(i,j,:), V(i,j,:), h_neglect, h_neglect_edge)
+  ! enddo ; enddo
   
   ! cast ensemble members to the analysis domain
   if (CS%prior_ave_counter < 0.5) then
     CS%Ocean_background_ave%T = 0.0
     CS%Ocean_background_ave%S = 0.0
-    CS%Ocean_background_ave%SSH = 0.0
+    ! CS%Ocean_background_ave%SSH = 0.0
 
     if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
       CS%Ocean_background_ave%U = 0.0
@@ -656,7 +657,7 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, model_u, model_v, model_ssh, flu
   
   CS%Ocean_background_ave%T(isc:iec,jsc:jec,:) = CS%Ocean_background_ave%T(isc:iec,jsc:jec,:) + T(isc:iec,jsc:jec,:)
   CS%Ocean_background_ave%S(isc:iec,jsc:jec,:) = CS%Ocean_background_ave%S(isc:iec,jsc:jec,:) + S(isc:iec,jsc:jec,:)
-  CS%Ocean_background_ave%SSH(isc:iec,jsc:jec) = CS%Ocean_background_ave%SSH(isc:iec,jsc:jec) + model_ssh(isc:iec,jsc:jec)
+  ! CS%Ocean_background_ave%SSH(isc:iec,jsc:jec) = CS%Ocean_background_ave%SSH(isc:iec,jsc:jec) + model_ssh(isc:iec,jsc:jec)
 
   if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
     CS%Ocean_background_ave%U(iscB:iecB,jsc:jec,:) = CS%Ocean_background_ave%U(iscB:iecB,jsc:jec,:) + U(iscB:iecB,jsc:jec,:)
@@ -671,7 +672,7 @@ subroutine set_prior_tracer(Time, G, GV, h, tv, model_u, model_v, model_ssh, flu
 
   call pass_var(CS%Ocean_background_ave%T,G%Domain)
   call pass_var(CS%Ocean_background_ave%S,G%Domain)
-  call pass_var(CS%Ocean_background_ave%SSH,G%Domain)
+  ! call pass_var(CS%Ocean_background_ave%SSH,G%Domain)
 
   if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
     call pass_var(CS%Ocean_background_ave%U,G%Domain)
@@ -751,16 +752,16 @@ subroutine get_posterior_tracer(Time, CS, increment)
   if (present(increment)) get_inc = increment
 
   if (get_inc) then
-    CS%Ocean_increment%T = CS%Ocean_posterior%T - CS%Ocean_prior%T
-    CS%Ocean_increment%S = CS%Ocean_posterior%S - CS%Ocean_prior%S
+    CS%Ocean_posterior%T = CS%Ocean_posterior%T - CS%Ocean_prior%T
+    CS%Ocean_posterior%S = CS%Ocean_posterior%S - CS%Ocean_prior%S
   endif
   ! It may be necessary to check whether the increment and ocean state have the
   ! same dimensionally rescaled units.
   do m=1,CS%ensemble_size
     if (get_inc) then
-      call redistribute_array(CS%mpp_domain, CS%Ocean_increment%T(:,:,:,m),&
+      call redistribute_array(CS%mpp_domain, CS%Ocean_posterior%T(:,:,:,m),&
            CS%domains(m)%mpp_domain, CS%T_tend, complete=.true.)
-      call redistribute_array(CS%mpp_domain, CS%Ocean_increment%S(:,:,:,m),&
+      call redistribute_array(CS%mpp_domain, CS%Ocean_posterior%S(:,:,:,m),&
            CS%domains(m)%mpp_domain, CS%S_tend, complete=.true.)
     else
       call redistribute_array(CS%mpp_domain, CS%Ocean_posterior%T(:,:,:,m),&
@@ -860,14 +861,14 @@ subroutine oda(Time, CS)
             CS%mpp_domain, CS%Ocean_prior%T(:,:,:,m), complete=.true.)
         call redistribute_array(CS%domains(m)%mpp_domain, CS%Ocean_background_ave%S,&
             CS%mpp_domain, CS%Ocean_prior%S(:,:,:,m), complete=.true.)
-        call redistribute_array(CS%domains(m)%mpp_domain, CS%Ocean_background_ave%SSH,&
-            CS%mpp_domain, CS%Ocean_prior%SSH(:,:,m), complete=.true.)
+        ! call redistribute_array(CS%domains(m)%mpp_domain, CS%Ocean_background_ave%SSH,&
+        !     CS%mpp_domain, CS%Ocean_prior%SSH(:,:,m), complete=.true.)
       enddo
 
       do m=1,CS%ensemble_size
         call pass_var(CS%Ocean_prior%T(:,:,:,m),CS%Grid%domain)
         call pass_var(CS%Ocean_prior%S(:,:,:,m),CS%Grid%domain)
-        call pass_var(CS%Ocean_prior%SSH(:,:,m),CS%Grid%domain)
+        ! call pass_var(CS%Ocean_prior%SSH(:,:,m),CS%Grid%domain)
       enddo
 
       #ifdef ENABLE_ECDA
@@ -878,7 +879,7 @@ subroutine oda(Time, CS)
     endif
 
     call get_posterior_tracer(Time, CS, increment=.true.)
-  
+
     call cpu_clock_end(id_clock_ensemble_filter)
 
   endif
@@ -1181,14 +1182,16 @@ subroutine apply_oda_tracer_increments(Time, G, GV, tv, h, CS)
   call pass_var(T_tend_inc, G%Domain)
   call pass_var(S_tend_inc, G%Domain)
 
-  do j=jsc,jec; do i=isc,iec
-    call remapping_core_h(CS%remapCS, CS%nk, CS%h(i,j,:), CS%T_ml_tend(i,j,:), &
-         G%ke, h(i,j,:), T_ml_tend_inc(i,j,:), h_neglect, h_neglect_edge)
-    call remapping_core_h(CS%remapCS, CS%nk, CS%h(i,j,:), CS%S_ml_tend(i,j,:), &
-         G%ke, h(i,j,:), S_ml_tend_inc(i,j,:), h_neglect, h_neglect_edge)
-  enddo; enddo
-  call pass_var(T_ml_tend_inc, G%Domain)
-  call pass_var(S_ml_tend_inc, G%Domain)
+  if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
+    do j=jsc,jec; do i=isc,iec
+      call remapping_core_h(CS%remapCS, CS%nk, CS%h(i,j,:), CS%T_ml_tend(i,j,:), &
+          G%ke, h(i,j,:), T_ml_tend_inc(i,j,:), h_neglect, h_neglect_edge)
+      call remapping_core_h(CS%remapCS, CS%nk, CS%h(i,j,:), CS%S_ml_tend(i,j,:), &
+          G%ke, h(i,j,:), S_ml_tend_inc(i,j,:), h_neglect, h_neglect_edge)
+    enddo; enddo
+    call pass_var(T_ml_tend_inc, G%Domain)
+    call pass_var(S_ml_tend_inc, G%Domain)
+  endif
 
   tv%T(isc:iec,jsc:jec,:) = tv%T(isc:iec,jsc:jec,:) + T_tend_inc(isc:iec,jsc:jec,:)*CS%apply_interval
   tv%S(isc:iec,jsc:jec,:) = tv%S(isc:iec,jsc:jec,:) + S_tend_inc(isc:iec,jsc:jec,:)*CS%apply_interval
@@ -1232,48 +1235,55 @@ end subroutine apply_oda_tracer_increments
 
     ! local variables
     real, dimension(:,:), allocatable :: global2D, global2D_old
-    integer :: i, j, k
-
+    integer :: i, j, k, ii, jj
+    integer :: isd_oda,ied_oda,jsd_oda,jed_oda
+    integer :: isc,iec,jsc,jec,isg,ieg,jsg,jeg
+    character(len=160) :: mesg  ! The text of an error message
     !    get global grid information from ocean_model
-    T_grid=>NULL()
-    !if (associated(T_grid)) call MOM_error(FATAL,'MOM_oda_driver:set_up_global_tgrid called with associated T_grid')
 
+    !if (associated(T_grid)) call MOM_error(FATAL,'MOM_oda_driver:set_up_global_tgrid called with associated T_grid')
     allocate(T_grid)
+
     T_grid%ni = CS%ni
     T_grid%nj = CS%nj
     T_grid%nk = CS%nk
     allocate(T_grid%x(CS%ni,CS%nj))
     allocate(T_grid%y(CS%ni,CS%nj))
-    allocate(T_grid%bathyT(CS%ni,CS%nj))
     call global_field(CS%mpp_domain, CS%Grid%geolonT, T_grid%x)
     call global_field(CS%mpp_domain, CS%Grid%geolatT, T_grid%y)
-    call global_field(CS%domains(CS%ensemble_id)%mpp_domain, G%bathyT, T_grid%bathyT)
     if (CS%use_basin_mask) then
       allocate(T_grid%basin_mask(CS%ni,CS%nj))
       call global_field(CS%mpp_domain, CS%oda_grid%basin_mask, T_grid%basin_mask)
     endif
-    allocate(T_grid%mask(CS%ni,CS%nj,CS%nk), source=0.0)
-    allocate(T_grid%z(CS%ni,CS%nj,CS%nk), source=0.0)
-    allocate(global2D(CS%ni,CS%nj))
-    allocate(global2D_old(CS%ni,CS%nj))
+    
+    T_grid%bathyT => CS%Grid%bathyT
+    
+    if (.not. associated(T_grid%h)) then
+      allocate(T_grid%h(CS%Grid%isd:CS%Grid%ied,CS%Grid%jsd:CS%Grid%jed,CS%nk), source=CS%GV%Angstrom_H)
+      ! assign thicknesses
+      call ALE_initThicknessToCoord(CS%ALE_CS, CS%Grid, CS%GV, T_grid%h)
+      call pass_var(T_grid%h,CS%Grid%domain)
+    endif
+
+    allocate(T_grid%mask(CS%Grid%isd:CS%Grid%ied,CS%Grid%jsd:CS%Grid%jed,CS%nk), source=0.0)
+    allocate(T_grid%z(CS%Grid%isd:CS%Grid%ied,CS%Grid%jsd:CS%Grid%jed,CS%nk), source=0.0)
 
     do k = 1, CS%nk
-      call global_field(G%Domain%mpp_domain, CS%h(:,:,k), global2D)
-      do i=1,CS%ni ; do j=1,CS%nj
-        if ( global2D(i,j) > 1 ) then
+      do i=CS%Grid%isd,CS%Grid%ied ; do j=CS%Grid%jsd,CS%Grid%jed
+        if ( T_grid%h(i,j,k) > 1 ) then
            T_grid%mask(i,j,k) = 1.0
         endif
       enddo; enddo
       if (k == 1) then
-         T_grid%z(:,:,k) = global2D/2
+         T_grid%z(:,:,k) = &
+            T_grid%h(:,:,k)/2
       else
-         T_grid%z(:,:,k) = T_grid%z(:,:,k-1) + (global2D + global2D_old)/2
+         T_grid%z(:,:,k) = T_grid%z(:,:,k-1) + &
+            (T_grid%h(:,:,k) + &
+            T_grid%h(:,:,k-1))/2
       endif
-      global2D_old = global2D
     enddo
 
-    deallocate(global2D)
-    deallocate(global2D_old)
   end subroutine set_up_global_tgrid
 
   subroutine set_oda_restart_fields(US, CS, restart_CSp)

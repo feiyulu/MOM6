@@ -1350,7 +1350,7 @@ subroutine save_restart(directory, time, G, CS, time_stamped, filename, GV, num_
                                         ! to the name of files after the first.
   integer(kind=8) :: var_sz, size_in_file ! The size in bytes of each variable
                                         ! and the variables already in a file.
-  integer(kind=8), parameter :: max_file_size = 4294967292_8 ! The maximum size in bytes for the
+  integer(kind=8), parameter :: max_file_size = 21474836460_8 ! The maximum size in bytes for the
                                         ! starting position of each variable in a file's record,
                                         ! based on the use of NetCDF 3.6 or later.  For earlier
                                         ! versions of NetCDF, the value was 2147483647_8.
