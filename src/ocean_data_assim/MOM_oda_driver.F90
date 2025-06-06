@@ -803,7 +803,7 @@ subroutine oda(Time, CS)
 
     CS%Ocean_background_ave%T = CS%Ocean_background_ave%T / (CS%prior_ave_counter)
     CS%Ocean_background_ave%S = CS%Ocean_background_ave%S / (CS%prior_ave_counter)
-    CS%Ocean_background_ave%SSH = CS%Ocean_background_ave%SSH / (CS%prior_ave_counter)
+    ! CS%Ocean_background_ave%SSH = CS%Ocean_background_ave%SSH / (CS%prior_ave_counter)
     if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
       CS%Ocean_background_ave%U = CS%Ocean_background_ave%U / (CS%prior_ave_counter)
       CS%Ocean_background_ave%V = CS%Ocean_background_ave%V / (CS%prior_ave_counter)
@@ -817,7 +817,7 @@ subroutine oda(Time, CS)
 
     call pass_var(CS%Ocean_background_ave%T,CS%model_G%Domain)
     call pass_var(CS%Ocean_background_ave%S,CS%model_G%Domain)
-    call pass_var(CS%Ocean_background_ave%SSH,CS%model_G%Domain)
+    ! call pass_var(CS%Ocean_background_ave%SSH,CS%model_G%Domain)
     if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
       call pass_var(CS%Ocean_background_ave%U,CS%model_G%Domain)
       call pass_var(CS%Ocean_background_ave%V,CS%model_G%Domain)
@@ -1038,7 +1038,7 @@ subroutine init_ocean_ensemble(CS,Grid,GV,ens_size)
 
   allocate(CS%T(isd:ied,jsd:jed,nk,ens_size),source=0.0)
   allocate(CS%S(isd:ied,jsd:jed,nk,ens_size),source=0.0)
-  allocate(CS%SSH(isd:ied,jsd:jed,ens_size),source=0.0)
+  ! allocate(CS%SSH(isd:ied,jsd:jed,ens_size),source=0.0)
 
   return
 end subroutine init_ocean_ensemble
@@ -1059,7 +1059,7 @@ subroutine init_ocean_background(CS,PriorCS,Grid,GV)
 
   allocate(PriorCS%T(isd:ied,jsd:jed,nk),source=0.0)
   allocate(PriorCS%S(isd:ied,jsd:jed,nk),source=0.0)
-  allocate(PriorCS%SSH(isd:ied,jsd:jed),source=0.0)
+  ! allocate(PriorCS%SSH(isd:ied,jsd:jed),source=0.0)
   
   if (CS%do_T_ml_bias_adjustment .or. CS%do_S_ml_bias_adjustment) then
     allocate(PriorCS%U(isdB:iedB,jsd:jed,nk),source=0.0)
